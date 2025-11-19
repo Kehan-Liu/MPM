@@ -1,0 +1,105 @@
+Metadata-Version: 2.4
+Name: taichi-mpm-lab
+Version: 0.1.0
+Summary: Coupled fluid/solid/cloth MLS-MPM sandbox built with Taichi
+Author-email: Your Name <you@example.com>
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: taichi>=1.7.0
+Requires-Dist: numpy>=1.24
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: usd-core>=24.5
+
+# Taichi MLS-MPM Laboratory
+
+This repository hosts a modular Material Point Method sandbox built with [Taichi](https://www.taichi-lang.org/) for experimenting with coupled fluid, deformable solid, and cloth simulations, and exporting them for offline rendering.
+
+## Repository layout
+
+```
+mpm/
+├── assets/              # Static geometry, textures, reference meshes for emitters/colliders
+├── docs/                # Design notes, equations, pipeline diagrams
+├── scenes/              # High-level simulation setups (Python or YAML configs)
+├── scripts/             # CLI utilities (batch runners, render submitters)
+├── src/
+│   ├── core/            # Grid-particle data structures, MLS-MPM solver loop
+│   ├── materials/       # Constitutive models + registry (fluids, elastoplastics, cloth)
+│   ├── emitters/        # Volume/mesh emitters and particle seeding utilities
+│   ├── colliders/       # Analytic/mesh colliders and coupling hooks
+│   ├── io/              # Checkpointing, particle caches, USD/PLY/NPZ exporters
+│   └── render/          # Preview viewers, offline export shims
+├── tests/               # Regression + convergence tests
+└── requirements.txt / pyproject.toml
+```
+
+## High-level roadmap
+
+1. **Core solver** – Implement a modular MLS-MPM solver that supports multiple materials by keeping material IDs and constitutive parameters per particle.
+2. **Scene authoring** – Provide emitter/collider factories and configuration loading so fluids, deformables, and cloth can be combined quickly.
+3. **Visualization** – Offer Taichi GGUI previews for iteration plus exporters (PLY, USD, or OpenVDB) that ingest into Blender Cycles, Houdini/Karma, Omniverse, etc.
+4. **Render automation** – Scripts that convert simulation caches into render-ready assets and submit them to the renderer of choice.
+
+## Getting started
+
+### 1. Install dependencies
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+### 2. Run the reference scene
+
+```bash
+python scripts/run_scene.py --scene fluid_cloth_demo --frames 5 --output outputs/fluid_cloth
+```
+
+This launches the Taichi runtime, builds the coupled fluid/elastic/cloth scene defined in `scenes/fluid_cloth_demo.py`, and writes compressed particle caches (`frame_XXXX.npz`) plus a `manifest.json` to the chosen output folder.
+
+### 3. Convert caches to USD
+
+```bash
+python scripts/export_usd.py --input outputs/fluid_cloth --output renders/fluid_cloth.usd --fps 24 --radius 0.015
+```
+
+This produces a time-sampled OpenUSD stage with a point-instancer (one prototype per material) and stores `materials.json` metadata for downstream tools.
+
+### 4. Render with Blender Cycles (industrial renderer)
+
+```bash
+blender -b -P scripts/blender_render.py -- \
+	--usd renders/fluid_cloth.usd \
+	--output renders/fluid_cloth.mp4 \
+	--resolution 1920 1080 \
+	--fps 24 \
+	--samples 128 \
+	--device GPU
+```
+
+The script enables the USD importer, instantiates materials, configures a Cycles camera/lighting rig, and renders the animation directly to an H.264 video.
+
+### 5. One-command pipeline (export + render)
+
+```bash
+python scripts/render_pipeline.py \
+	--input outputs/fluid_cloth_cpu \
+	--video renders/fluid_cloth.mp4 \
+	--fps 24 \
+	--radius 0.015 \
+	--samples 128 \
+	--device GPU \
+	--blender /path/to/blender
+```
+
+This helper first emits the USD file (next to the video path) and then launches Blender headlessly to produce the final frames.
+
+### 6. Inspect or customize
+
+- Use `src/render/preview.py` for a lightweight Taichi visualization while iterating.
+- Import the generated USD in Houdini Solaris, Omniverse, or any Hydra-compatible renderer if you prefer alternative lookdev workflows.
+
+## Next steps
+
+- Add more materials (granular, snow) by registering new `MaterialConfig`s in the scene scripts.
+- Extend `src/io/particle_io.py` with USD/PLY writers for plug-and-play render pipelines.
+- Flesh out `tests/` with convergence suites and regression snapshots once the solver stabilizes.
