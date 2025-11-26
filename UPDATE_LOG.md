@@ -1,3 +1,13 @@
+## 11.26
+By LHZ
+
+- Implement the API document
+- In a nutshell, use different simulator classes to manage different material objects, and use coupling method to handle interactions between different materials.
+
+TODOs:
+- Implement the precise function
+- Decide the specific file directory.
+
 ## 11.19
 
 By LKH
