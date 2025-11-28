@@ -1,8 +1,12 @@
+## 11.28
+By LHZ
+
+- Implement Solid Simulator version 1, but still facing the problem of falling through the ground.
+
 ## 11.27
 By LHZ
 
 - Implement Render version 1 for solid boxes collision demo.
-
 
 ## 11.26
 By LHZ

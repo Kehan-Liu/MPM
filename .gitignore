@@ -6,3 +6,5 @@ outputs/
 demo/
 src/
 taichi_mpm/
+*.obj
+*.log
