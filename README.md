@@ -21,28 +21,21 @@ pip install -r requirements.txt
 
 ### 最小示例（两个盒体对撞）
 ```powershell
-python simulators\solid\rigid_body_sim.py --dt 0.016 --frames 120 --out render\output\rigid_frames
+python simulators\solid\rigid_body_sim_ti.py --mode two_spheres --frames 240 --dt 0.004 --substeps 32 --gravity 0,-9.8,0 --restitution 0.5 --tangential_damping 0.2 --mu_t 0.3 --c_t 6000
 ```
-
-### 自定义刚体（重复使用 `--body` 描述串）
-```powershell
-python simulators\solid\rigid_body_sim.py --dt 0.01 --frames 240 --gravity 0,-9.8,0 `
-	--body box:mass=2.0:size=1,1,1:pos=-2,1,0:vel=3,0,0:color=0.2,0.6,0.9 `
-	--body sphere:mass=1.5:radius=0.6:pos=2,1,0:vel=-3,0,0:color=0.9,0.4,0.2 `
-	--out render\output\rigid_frames
-```
-
-### 导入网格
-```powershell
-python simulators\solid\rigid_body_sim.py --frames 180 --dt 0.016 `
-	--body mesh:mesh=render/assets/demo_cube.obj:mass=3.0:pos=0,1,0:vel=0,0,0:color=1,1,1 `
-	--body mesh:mesh=render/assets/demo_ball.obj:mass=2.0:pos=2,1,0:vel=-2,0,0:color=1,0.8,0.3 `
-	--out render\output\rigid_frames
-```
-
+这是模拟的流程,参数分别代表:
+- `--mode` : 选择模拟场景（单球/双球/其他自定义场景）
+- `--frames` : 总帧数
+- `--dt` : 每帧时间步长
+- `--substeps` : 每帧内的子步数（提高精度）
+- `--gravity` : 重力向量
+- `--restitution` : 碰撞恢复系数 (0~1) 过大会导致球反弹过高
+- `--tangential_damping` : 切向阻尼系数 (0~1)
+- `--mu_t` : 摩擦系数
+- `--c_t` : 摩擦刚度系数（影响摩擦力计算）
 ### 输出内容
-- 每帧生成：`frame_XXXX_bodyN.obj`（单独网格，已应用位移 + 旋转）。
-- 汇总：`frames.json`（包含 dt、每帧各刚体位置、四元数、尺寸、颜色）。
+- 每帧生成：`frame_XXXX_bodyN.obj`（单独网格，已应用位移 + 旋转）(非常重要)
+- 汇总：`frames.json`（包含 dt、每帧各刚体位置、四元数、尺寸、颜色）(并不重要)
 
 ### 冲量解算特性
 - 近似碰撞：AABB 重叠检测 + 选择最小重合轴作为法向。
@@ -51,15 +44,42 @@ python simulators\solid\rigid_body_sim.py --frames 180 --dt 0.016 `
 - 摩擦冲量：库仑模型，限幅 `μ * j_n`。
 - 姿态更新：四元数增量 `ω` -> `Δq`，并归一化。
 
-### 后续可扩展方向
+### 已经扩展方向
 - 更精确的窄相检测：GJK + EPA 或 SAT for OBB。
 - 连续碰撞检测（CCD）以防高速穿透。
 - 约束稳定器（ERP / warm starting / sequential impulses）。
-- 网格体积/惯性更精确估计（利用体素或凸分解）。
-- Taichi 加速：把碰撞与积分循环迁移到 `@ti.kernel`。
+- 重复resolve 20次获得更精准法向量
 
+## 渲染(Render)
+假设你的blender路径在
+```
+C:\\Program Files\\Blender Foundation\\Blender 5.0\\blender.exe
+```
+使用以下命令来运行:
+```powershell
+ & "C:\Program Files\Blender Foundation\Blender 5.0\blender.exe" -b -P "f:\MPM\render\blender_render.py" -- `         
+>>   --mesh_sequence "f:\MPM\render\output\rigid_ti_frames" `
+>>   --output "f:\MPM\render\output\render_ti_frames" `
+>>   --fps 60 --resolution 1280x720 --engine CYCLES --samples 128 --use_gpu --gpu_only --ground `
+>>   --gravity "0,0,0" --show_gravity --gravity_marker_length 2.5 --body_colors "0:0.2,0.6,0.9;1:0.9,0.4,0.2"
+```
+这是渲染的整个流程.参数分别代表:
+- `--mesh_sequence` : 读取的刚体模拟输出目录
+- `--output` : 输出渲染图片的目录
+- `--fps` : 帧率
+- `--resolution` : 分辨率
+- `--use_gpu`, `--gpu_only` : 使用GPU渲染
+- `--ground` : 添加地面阴影
+- `--body_colors` : 给不同刚体上色
+## PNG 转化为 MP4
+```powershell
+python .\render\frames_to_mp4.py --input render\output\rigid_ti_frames --out render\output\ti_demo.mp4 --fps 60
+```
+以60帧每秒的速度将render\output\rigid_ti_frames目录下的png图片转化为mp4视频文件ti_demo.mp4
 # Bug to Fix
-- 刚体模拟不太对, 刚体会弹一下以后穿过地面
+- None
+
+
 
 
 
