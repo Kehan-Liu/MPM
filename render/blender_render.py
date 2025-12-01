@@ -151,6 +151,19 @@ def parse_args(argv):
         elif k == "--frame_end" and i + 1 < len(argv):
             args["frame_end"] = int(argv[i + 1])
             i += 2
+        elif k == "--gravity" and i + 1 < len(argv):
+            # gravity as comma-separated string e.g. "0,-9.8,0"
+            args["gravity"] = argv[i + 1]
+            i += 2
+        elif k == "--show_gravity":
+            args["show_gravity"] = True
+            i += 1
+        elif k == "--gravity_marker_length" and i + 1 < len(argv):
+            try:
+                args["gravity_marker_length"] = float(argv[i + 1])
+            except Exception:
+                pass
+            i += 2
         elif k == "--debug":
             args["debug"] = True
             i += 1
@@ -457,6 +470,89 @@ def setup_lights(args):
         add_area((0.0, 6.0, -2.5), (math.radians(-80), 0, 0), 2.0, 300)
 
 
+def add_gravity_marker(args, target=(0.0, 0.5, 0.0)):
+    """Add an arrow (shaft + cone) that points in the gravity direction (points toward g).
+    Requires args['gravity'] to be set (string "gx,gy,gz" or tuple/list).
+    """
+    try:
+        from mathutils import Vector
+    except Exception:
+        print('[GRAV] mathutils not available; cannot add gravity marker')
+        return
+    if not args.get('show_gravity'):
+        return
+    grav = args.get('gravity')
+    if not grav:
+        return
+    # parse gravity
+    if isinstance(grav, str):
+        try:
+            gx, gy, gz = [float(x) for x in grav.split(',')]
+        except Exception:
+            print(f'[GRAV] invalid gravity string: {grav}')
+            return
+    else:
+        try:
+            gx, gy, gz = grav
+        except Exception:
+            print(f'[GRAV] invalid gravity value: {grav}')
+            return
+    g = Vector((gx, gy, gz))
+    if g.length < 1e-9:
+        print('[GRAV] gravity is zero; skip marker')
+        return
+    g_n = g.normalized()
+    length = float(args.get('gravity_marker_length', 2.0))
+    shaft_len = max(0.01, length * 0.75)
+    head_len = max(0.01, length * 0.25)
+    shaft_radius = max(0.01, length * 0.02)
+    head_radius = max(0.02, length * 0.06)
+
+    # create an empty parent
+    bpy.ops.object.empty_add(type='PLAIN_AXES', location=tuple(target))
+    parent = bpy.context.active_object
+    parent.name = 'Gravity_Marker'
+
+    # create shaft (cylinder) along +Z by default, we'll rotate to align
+    bpy.ops.mesh.primitive_cylinder_add(radius=shaft_radius, depth=shaft_len, location=(0,0,0))
+    shaft = bpy.context.active_object
+    shaft.name = 'Gravity_Shaft'
+    # move shaft so its one end is at origin: cylinder is centered, so move by +shaft_len/2 along Z
+    shaft.location = (0.0, 0.0, shaft_len / 2.0)
+    shaft.parent = parent
+
+    # create head (cone)
+    try:
+        bpy.ops.mesh.primitive_cone_add(radius1=head_radius, depth=head_len, location=(0,0,0))
+    except Exception:
+        # older Blender: use cone via cylinder with vertices change or skip
+        bpy.ops.mesh.primitive_cone_add(radius1=head_radius, depth=head_len, location=(0,0,0))
+    head = bpy.context.active_object
+    head.name = 'Gravity_Head'
+    # place head at tip: centered at origin -> move by shaft_len + head_len/2
+    head.location = (0.0, 0.0, shaft_len + head_len / 2.0)
+    head.parent = parent
+
+    # compute rotation to align +Z to g direction (arrow should point toward g)
+    src = Vector((0.0, 0.0, 1.0))
+    dst = g_n
+    quat = src.rotation_difference(dst)
+    parent.rotation_mode = 'QUATERNION'
+    parent.rotation_quaternion = quat
+    # optionally give a distinct material
+    try:
+        mat = bpy.data.materials.new('GravMat')
+        mat.diffuse_color = (1.0, 0.2, 0.2, 1.0)
+        for obj in (shaft, head):
+            if obj.type == 'MESH':
+                if len(obj.data.materials):
+                    obj.data.materials[0] = mat
+                else:
+                    obj.data.materials.append(mat)
+    except Exception:
+        pass
+
+
 def add_ground(args):
     if not args.get("ground"):
         return None
@@ -501,10 +597,91 @@ def look_at(obj, target):
     obj.rotation_euler = (pitch, 0.0, yaw)
 
 
-def setup_camera_and_light():
+def _orient_camera_to_gravity(cam, gravity_str, target=(0.0, 0.5, 0.0)):
+    # gravity_str: "gx,gy,gz" or tuple/list; orient camera so screen up = -normalize(g)
+    try:
+        from mathutils import Vector, Matrix
+    except Exception:
+        print('[CAM] mathutils not available')
+        return
+    if not gravity_str:
+        return
+    # parse gravity
+    if isinstance(gravity_str, str):
+        try:
+            gx, gy, gz = [float(x) for x in gravity_str.split(',')]
+        except Exception:
+            print(f'[CAM] invalid gravity string: {gravity_str}')
+            return
+    else:
+        try:
+            gx, gy, gz = gravity_str
+        except Exception:
+            print(f'[CAM] invalid gravity value: {gravity_str}')
+            return
+    g = Vector((gx, gy, gz))
+    if g.length < 1e-9:
+        print('[CAM] gravity vector is zero; skip orientation')
+        return
+
+    # Desired image 'up' (world space) so that image down == gravity
+    desired_up = (-g).normalized()
+
+    cam_pos = cam.location.copy()
+    tgt = Vector(target)
+    forward = (tgt - cam_pos)
+    if forward.length < 1e-9:
+        print('[CAM] camera at target; cannot orient')
+        return
+    forward = forward.normalized()
+
+    # If forward is nearly parallel to desired_up, pick a fallback up to avoid degenerate basis
+    if abs(forward.dot(desired_up)) > 0.999:
+        fallback = Vector((0.0, 0.0, 1.0))
+        if abs(forward.dot(fallback)) > 0.999:
+            fallback = Vector((0.0, 1.0, 0.0))
+        desired_up = fallback
+
+    # Build orthonormal basis: right, up, -forward (camera looks along -Z local)
+    right = forward.cross(desired_up)
+    if right.length < 1e-9:
+        print('[CAM] failed to compute right vector; skipping')
+        return
+    right.normalize()
+    up = right.cross(forward).normalized()
+
+    # Construct rotation matrix where columns are (right, up, -forward)
+    # Then place camera at target - forward * distance to preserve original distance
+    try:
+        rot3 = Matrix((right, up, -forward))
+    except Exception:
+        # fallback: use to_track_quat as last resort
+        try:
+            rot_quat = forward.to_track_quat('-Z', 'Y')
+            cam.rotation_euler = rot_quat.to_euler()
+            return
+        except Exception:
+            print('[CAM] failed to build rotation matrix')
+            return
+
+    # Preserve original distance from camera to target
+    dist = (cam_pos - tgt).length
+    new_cam_pos = tgt - forward * dist
+
+    cam.matrix_world = Matrix.Translation(new_cam_pos) @ rot3.to_4x4()
+
+
+def setup_camera_and_light(args=None):
     bpy.ops.object.camera_add(location=(0.0, 3.0, 6.0))
     cam = bpy.context.active_object
     look_at(cam, (0.0, 0.5, 0.0))
+    # If gravity provided, orient camera so screen down == gravity
+    try:
+        grav = args.get('gravity') if args else None
+        if grav:
+            _orient_camera_to_gravity(cam, grav, target=(0.0, 0.5, 0.0))
+    except Exception as e:
+        print(f'[CAM] orientation to gravity failed: {e}')
     # Ensure the scene uses this camera for rendering
     bpy.context.scene.camera = cam
     return cam
@@ -572,11 +749,16 @@ def main():
     colors = [frames[0]["boxes"][0].get("color", [0.2, 0.6, 0.9]), frames[0]["boxes"][1].get("color", [0.9, 0.4, 0.2])]
 
     clear_scene()
-    setup_camera_and_light()
+    setup_camera_and_light(args)
     configure_engine(args)
     setup_world(args)
     setup_lights(args)
     add_ground(args)
+    # optional gravity visual marker
+    try:
+        add_gravity_marker(args, target=(0.0, 0.5, 0.0))
+    except Exception as e:
+        print(f'[GRAV] failed to add marker: {e}')
     imported = []
     if args.get("import_meshes"):
         try:
@@ -677,7 +859,7 @@ def render_mesh_sequence(args):
         except Exception as e:
             print('[SEQ] Failed reading frames.json:', e)
     clear_scene()
-    setup_camera_and_light()
+    setup_camera_and_light(args)
     configure_engine(args)
     setup_world(args)
     setup_lights(args)

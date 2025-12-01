@@ -1,9 +1,22 @@
 ## 12.1
 By LKH
 
-- Rewrite API document
+- Rewrite API document, implement framework
 - Implement MLS-MPM-CPIC, finish mpm simulation and coupling between mpm objects and rigid bodies
-- 
+
+TODOs:
+- merge with rigid body simulator by LHZ
+- rendering of mpm objects 
+
+## 12.1
+By LHZ
+
+- Fix the bug of solid simulator where solid boxes fall through the ground.
+- Fix the bug that the ball bounce too high due to wrong restitution implementation.
+- Basically implemented a correct impulse-based rigid body simulator with friction.
+- Update the Blender renderer such that it could successfully render the mesh based objects.
+
+Note that the rigid_body_sim_ti.py works as a taichi simulator, use that one!
 
 ## 11.28
 By LHZ
