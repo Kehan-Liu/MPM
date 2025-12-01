@@ -4,7 +4,7 @@ outputs/
 *.jpg
 *.png
 demo/
-src/
 taichi_mpm/
 *.obj
 *.log
+results/

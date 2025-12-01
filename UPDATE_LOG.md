@@ -1,3 +1,10 @@
+## 12.1
+By LKH
+
+- Rewrite API document
+- Implement MLS-MPM-CPIC, finish mpm simulation and coupling between mpm objects and rigid bodies
+- 
+
 ## 11.28
 By LHZ
 
