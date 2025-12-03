@@ -58,10 +58,10 @@ C:\\Program Files\\Blender Foundation\\Blender 5.0\\blender.exe
 使用以下命令来运行:
 ```powershell
  & "C:\Program Files\Blender Foundation\Blender 5.0\blender.exe" -b -P "f:\MPM\render\blender_render.py" -- `         
->>   --mesh_sequence "f:\MPM\render\output\rigid_ti_frames" `
->>   --output "f:\MPM\render\output\render_ti_frames" `
->>   --fps 60 --resolution 1280x720 --engine CYCLES --samples 128 --use_gpu --gpu_only --ground `
->>   --gravity "0,0,0" --show_gravity --gravity_marker_length 2.5 --body_colors "0:0.2,0.6,0.9;1:0.9,0.4,0.2"
+--mesh_sequence "f:\MPM\render\output\rigid_ti_frames" `
+--output "f:\MPM\render\output\render_ti_frames" `
+--fps 60 --resolution 1280x720 --engine CYCLES --samples 128 --use_gpu --gpu_only --ground `
+--gravity "0,0,0" --show_gravity --gravity_marker_length 2.5 --body_colors "0:0.2,0.6,0.9;1:0.9,0.4,0.2"
 ```
 这是渲染的整个流程.参数分别代表:
 - `--mesh_sequence` : 读取的刚体模拟输出目录

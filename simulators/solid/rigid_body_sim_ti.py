@@ -33,7 +33,48 @@ class RigidBody:
                 velocity=np.array([0.0, 0.0, 0.0], dtype=np.float32), 
                 angular_velocity=np.array([0.0, 0.0, 0.0], dtype=np.float32),
                 collision_threshold=np.finfo(np.float32).tiny,
-                fixed=False):
+                fixed=False,
+                rigid_object=None,
+                scripted_trajectory=None):
+        # Optional helper: convert quaternion (w,x,y,z) to rotation matrix
+        def quat_wxyz_to_matrix(qwxyz):
+            qw, qx, qy, qz = float(qwxyz[0]), float(qwxyz[1]), float(qwxyz[2]), float(qwxyz[3])
+            # normalized not strictly required, but safer
+            norm = (qw*qw + qx*qx + qy*qy + qz*qz) ** 0.5
+            if norm > 1e-8:
+                qw, qx, qy, qz = qw/norm, qx/norm, qy/norm, qz/norm
+            # standard quaternion to rotation matrix (w,x,y,z)
+            xx, yy, zz = qx*qx, qy*qy, qz*qz
+            xy, xz, yz = qx*qy, qx*qz, qy*qz
+            wx, wy, wz = qw*qx, qw*qy, qw*qz
+            return np.array([
+                [1 - 2*(yy + zz), 2*(xy - wz),     2*(xz + wy)],
+                [2*(xy + wz),     1 - 2*(xx + zz), 2*(yz - wx)],
+                [2*(xz - wy),     2*(yz + wx),     1 - 2*(xx + yy)],
+            ], dtype=np.float32)
+
+        # If a RigidObject is provided, override inputs from it
+        if rigid_object is not None:
+            try:
+                # mesh: load from path in RigidObject.meshdir
+                mesh_path = getattr(rigid_object, 'meshdir', None)
+                if mesh_path is None:
+                    raise ValueError('RigidObject.meshdir is required')
+                mesh = trimesh.load(mesh_path, force='mesh')
+            except Exception as e:
+                raise RuntimeError(f"Failed to load mesh from RigidObject.meshdir: {e}")
+
+            # mass/pose/vel from RigidObject
+            mass = float(getattr(rigid_object, 'mass', mass))
+            pos_tup = getattr(rigid_object, 'position', (0.0, 0.0, 0.0))
+            position = np.array(pos_tup, dtype=np.float32)
+
+            # orientation tuple is (w,x,y,z) per src/objects.py
+            ori_tup = getattr(rigid_object, 'orientation', (1.0, 0.0, 0.0, 0.0))
+            orientation = quat_wxyz_to_matrix(ori_tup)
+
+            velocity = np.array(getattr(rigid_object, 'velocity', (0.0,0.0,0.0)), dtype=np.float32)
+            angular_velocity = np.array(getattr(rigid_object, 'angular_velocity', (0.0,0.0,0.0)), dtype=np.float32)
 
         if type == 'Ball':
             mesh = Ball(radius, center, resolution)
@@ -84,6 +125,8 @@ class RigidBody:
         self.angular_momentum = ti.Vector.field(3, dtype=ti.f32, shape=())
         self.fixed = fixed
         # self.eular_angles = ti.Vector.field(3, dtype=ti.f32, shape=())
+        # Optional: scripted trajectory callable: f(t)->(pos(np.array[3]), quat(w,x,y,z))
+        self.scripted_trajectory = scripted_trajectory
         
     @ti.func
     def mass_center(self) -> ti.types.vector(3, ti.f32):
@@ -221,6 +264,70 @@ class RigidBody:
             # Reset forces and torques
             self.force[None] = ti.Vector([0.0, 0.0, 0.0])
             self.torque[None] = ti.Vector([0.0, 0.0, 0.0])
+    
+    def follow_trajectory(self, t: float, dt: float):
+        """Follow a scripted trajectory at time t, ignoring all forces.
+
+        scripted_trajectory must be a Python callable returning (pos, quat_wxyz)
+        where pos is iterable of 3 floats and quat_wxyz is (w,x,y,z).
+        This method sets position/orientation/velocity/angular_velocity directly
+        and clears accumulated forces/torques.
+        """
+        if self.scripted_trajectory is None:
+            return
+        # Sample pose at t and t+dt
+        pos_t, quat_t = self.scripted_trajectory(t)
+        pos_next, quat_next = self.scripted_trajectory(t + dt)
+        p_t = np.array(pos_t, dtype=np.float32)
+        p_next = np.array(pos_next, dtype=np.float32)
+        # Linear velocity from finite difference
+        v = (p_next - p_t) / float(dt if dt != 0 else 1e-8)
+
+        # Normalize quaternions
+        q1 = np.array(quat_t, dtype=np.float32)
+        q2 = np.array(quat_next, dtype=np.float32)
+        def _norm_quat(q):
+            n = float(np.linalg.norm(q))
+            return q / n if n > 1e-8 else q
+        q1 = _norm_quat(q1)
+        q2 = _norm_quat(q2)
+        # q_diff = q2 * conj(q1) in (w,x,y,z)
+        w1, x1, y1, z1 = float(q2[0]), float(q2[1]), float(q2[2]), float(q2[3])
+        w2, x2, y2, z2 = float(q1[0]), -float(q1[1]), -float(q1[2]), -float(q1[3])
+        w_diff = w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2
+        x_diff = w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2
+        y_diff = w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2
+        z_diff = w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2
+        if w_diff < 0:
+            w_diff, x_diff, y_diff, z_diff = -w_diff, -x_diff, -y_diff, -z_diff
+        omega = 2.0 * np.array([x_diff, y_diff, z_diff], dtype=np.float32) / float(dt if dt != 0 else 1e-8)
+
+        # Convert q1 to rotation matrix (w,x,y,z)
+        qw, qx, qy, qz = float(q1[0]), float(q1[1]), float(q1[2]), float(q1[3])
+        xx, yy, zz = qx*qx, qy*qy, qz*qz
+        xy, xz, yz = qx*qy, qx*qz, qy*qz
+        wx, wy, wz = qw*qx, qw*qy, qw*qz
+        R = np.array([
+            [1 - 2*(yy + zz), 2*(xy - wz),     2*(xz + wy)],
+            [2*(xy + wz),     1 - 2*(xx + zz), 2*(yz - wx)],
+            [2*(xz - wy),     2*(yz + wx),     1 - 2*(xx + yy)],
+        ], dtype=np.float32)
+
+        # Write to Taichi fields
+        self.position[None] = p_t
+        self.velocity[None] = v
+        self.orientation[None] = R
+        self.angular_velocity[None] = omega
+        # Clear forces/torques to avoid accumulation
+        self.force[None] = ti.Vector([0.0, 0.0, 0.0])
+        self.torque[None] = ti.Vector([0.0, 0.0, 0.0])
+
+    def step(self, t: float, dt: float, max_speed: float, max_omega: float):
+        """Advance body by dt. If scripted, follow trajectory; otherwise integrate physics."""
+        if self.scripted_trajectory is not None:
+            self.follow_trajectory(t, dt)
+        else:
+            self.update(dt, max_speed, max_omega)
         
     @ti.func
     def compute_angular_acceleration(self) -> ti.types.vector(3, ti.f32):
@@ -447,11 +554,46 @@ def apply_sphere_sphere_impulse(A, B, radiusA, radiusB, restitution=0.0, max_imp
     A.velocity[None] = vA_new
     B.velocity[None] = vB_new
 
+def enforce_no_slip_sphere_plane(rb: RigidBody, n_vec, radius: float, mass: float, mu: float = None):
+    """Enforce no-slip at sphere-plane contact by applying a tangential impulse.
+
+    Uses an analytic effective mass for a solid sphere: I = 2/5 m R^2, so
+    Keff_t = 1/m + R^2/I = 1/m + 5/(2m) = 7/(2m). Impulse j = -|vt|/Keff along -vt.
+    Optionally clamp by Coulomb: |j| <= mu * jn_est (jn_est is a rough estimate).
+    """
+    try:
+        n = np.array(n_vec, dtype=np.float32)
+        # current states
+        v = rb.velocity.to_numpy()
+        w = rb.angular_velocity.to_numpy()
+        r = -float(radius) * n
+        v_contact = v + np.cross(w, r)
+        vn = float(np.dot(v_contact, n))
+        vt = v_contact - vn * n
+        vt_norm = float(np.linalg.norm(vt))
+        if vt_norm < 1e-7:
+            return
+        t_hat = vt / vt_norm
+        I_solid = 0.4 * float(mass) * (float(radius) ** 2)  # 2/5 m R^2
+        keff = 1.0 / float(mass) + (float(radius) ** 2) / I_solid
+        j = -vt_norm / keff
+        if mu is not None:
+            # rough normal impulse estimate (non-separating)
+            jn_est = float(mass) * max(0.0, -vn)
+            j = np.sign(j) * min(abs(j), float(mu) * jn_est)
+        v_new = v + (j * t_hat) / float(mass)
+        w_new = w + np.cross(r, j * t_hat) / I_solid
+        rb.velocity[None] = v_new.astype(np.float32)
+        rb.angular_velocity[None] = w_new.astype(np.float32)
+    except Exception:
+        # be conservative: ignore errors in enforcement
+        pass
+
 def run_sphere_drop(frames=240, dt=1/240.0, out_dir='render/output/rigid_ti_frames',
                     gravity=(0.0, -9.8, 0.0), stiffness=5e4, damping=1e4, margin=1e-3,
                     radius=0.5, mass=1.0, start_pos=(0.0, 2.0, 0.0), start_vel=(0.0, 0.0, 0.0), ground_y=0.0,
                     max_speed=25.0, max_omega=35.0, restitution=0.0, tangential_damping=0.0,
-                    mu_t=0.2, c_t=5000.0):
+                    mu_t=0.2, c_t=5000.0, enforce_no_slip=False):
     rb = RigidBody(type='Ball', mass=mass, radius=radius,
                    position=np.array(start_pos, dtype=np.float32),
                    velocity=np.array(start_vel, dtype=np.float32))
@@ -462,29 +604,40 @@ def run_sphere_drop(frames=240, dt=1/240.0, out_dir='render/output/rigid_ti_fram
 
     t0 = time.time()
     for frame in range(frames):
-        apply_gravity(rb, float(mass), float(gx), float(gy), float(gz))
-        mesh_plane_penalty(rb, 0.0, 1.0, 0.0, float(ground_y), float(stiffness), float(damping), float(margin),
-               float(mu_t), float(c_t), 1e4)
-        rb.update(float(dt), float(max_speed), float(max_omega))
-        # Position projection + restitution (simple corrective impulse for sphere-plane)
-        pos = rb.position.to_numpy()
-        vel = rb.velocity.to_numpy()
-        # ground normal
-        n = np.array([0.0, 1.0, 0.0], dtype=np.float32)
-        if pos[1] < ground_y + radius:
-            # project out of plane
-            pos[1] = ground_y + radius
-            # correct normal velocity using restitution
-            vn = float(np.dot(vel, n))
-            if vn < 0.0:
-                e = float(restitution)
-                vel = vel - (1.0 + e) * vn * n
-            # optional tangential damping to remove sliding energy at impact
-            if tangential_damping > 0.0:
-                vt = vel - np.dot(vel, n) * n
-                vel = np.dot(vel, n) * n + (1.0 - float(tangential_damping)) * vt
-            rb.position[None] = pos
-            rb.velocity[None] = vel
+        t = frame * float(dt)
+        if rb.scripted_trajectory is not None:
+            # Scripted: advance by trajectory, ignore all forces/contacts
+            rb.step(t, float(dt), float(max_speed), float(max_omega))
+        else:
+            apply_gravity(rb, float(mass), float(gx), float(gy), float(gz))
+            mesh_plane_penalty(rb, 0.0, 1.0, 0.0, float(ground_y), float(stiffness), float(damping), float(margin),
+                   float(mu_t), float(c_t), 1e4)
+            rb.step(t, float(dt), float(max_speed), float(max_omega))
+            # Position projection + restitution (simple corrective impulse for sphere-plane)
+            pos = rb.position.to_numpy()
+            vel = rb.velocity.to_numpy()
+            # ground normal
+            n = np.array([0.0, 1.0, 0.0], dtype=np.float32)
+            if pos[1] < ground_y + radius:
+                # project out of plane
+                pos[1] = ground_y + radius
+                # correct normal velocity using restitution
+                vn = float(np.dot(vel, n))
+                if vn < 0.0:
+                    e = float(restitution)
+                    vel = vel - (1.0 + e) * vn * n
+                # optional tangential damping to remove sliding energy at impact
+                if tangential_damping > 0.0:
+                    vt = vel - np.dot(vel, n) * n
+                    vel = np.dot(vel, n) * n + (1.0 - float(tangential_damping)) * vt
+                rb.position[None] = pos
+                rb.velocity[None] = vel
+                # enforce no-slip rolling at contact (promotes rolling)
+                if enforce_no_slip:
+                    try:
+                        enforce_no_slip_sphere_plane(rb, n_vec=[0.0, 1.0, 0.0], radius=float(radius), mass=float(mass), mu=float(mu_t))
+                    except Exception:
+                        pass
         export_obj(rb, os.path.join(out_dir, f'frame_{frame:04d}_body0.obj'))
         if frame % 60 == 0:
             elapsed = time.time() - t0
@@ -500,7 +653,7 @@ def run_two_spheres(frames=90, dt=1/90.0, out_dir='render/output/rigid_ti_frames
                     posB=(1.0, 0.6, 0.0), velB=(-2.0, 0.0, 0.0),
                     max_speed=20.0, max_omega=30.0, substeps=2,
                     ground_y=0.0, restitution=0.0, tangential_damping=0.0,
-                    mu_t=0.2, c_t=5000.0):
+                    mu_t=0.2, c_t=5000.0, enforce_no_slip=False):
     A = RigidBody(type='Ball', mass=mass, radius=radius, position=np.array(posA, dtype=np.float32), velocity=np.array(velA, dtype=np.float32))
     B = RigidBody(type='Ball', mass=mass, radius=radius, position=np.array(posB, dtype=np.float32), velocity=np.array(velB, dtype=np.float32))
     gx, gy, gz = gravity
@@ -510,23 +663,34 @@ def run_two_spheres(frames=90, dt=1/90.0, out_dir='render/output/rigid_ti_frames
     for frame in range(frames):
         # substeps for stability
         dt_step = float(dt) / float(substeps)
-        for _ in range(int(substeps)):
-            apply_gravity(A, float(mass), float(gx), float(gy), float(gz))
-            apply_gravity(B, float(mass), float(gx), float(gy), float(gz))
-            # Prefer analytic sphere-sphere contact for balls
-            sphere_sphere_penalty(A, B, float(radius), float(radius), float(stiffness), float(damping), float(margin))
+        for s in range(int(substeps)):
+            t = frame * float(dt) + s * dt_step
+            # gravity per body unless scripted
+            if A.scripted_trajectory is None:
+                apply_gravity(A, float(mass), float(gx), float(gy), float(gz))
+            if B.scripted_trajectory is None:
+                apply_gravity(B, float(mass), float(gx), float(gy), float(gz))
+            # Prefer analytic sphere-sphere contact for balls (skip if any scripted)
+            if (A.scripted_trajectory is None) and (B.scripted_trajectory is None):
+                sphere_sphere_penalty(A, B, float(radius), float(radius), float(stiffness), float(damping), float(margin))
             # ground plane penalty for both spheres so they land on floor
-            mesh_plane_penalty(A, 0.0, 1.0, 0.0, float(ground_y), float(stiffness), float(damping), float(margin), float(mu_t), float(c_t), 1e4)
-            mesh_plane_penalty(B, 0.0, 1.0, 0.0, float(ground_y), float(stiffness), float(damping), float(margin), float(mu_t), float(c_t), 1e4)
-            A.update(dt_step, float(max_speed), float(max_omega))
-            B.update(dt_step, float(max_speed), float(max_omega))
+            if A.scripted_trajectory is None:
+                mesh_plane_penalty(A, 0.0, 1.0, 0.0, float(ground_y), float(stiffness), float(damping), float(margin), float(mu_t), float(c_t), 1e4)
+            if B.scripted_trajectory is None:
+                mesh_plane_penalty(B, 0.0, 1.0, 0.0, float(ground_y), float(stiffness), float(damping), float(margin), float(mu_t), float(c_t), 1e4)
+            # integrate or follow scripted via unified step
+            A.step(t, dt_step, float(max_speed), float(max_omega))
+            B.step(t, dt_step, float(max_speed), float(max_omega))
             # Apply analytic linear impulse to control sphere-sphere collision velocities
-            try:
-                apply_sphere_sphere_impulse(A, B, float(radius), float(radius), restitution=restitution, max_impulse=None)
-            except Exception:
-                pass
-            # Simple projection + restitution per substep for each sphere
+            if (A.scripted_trajectory is None) and (B.scripted_trajectory is None):
+                try:
+                    apply_sphere_sphere_impulse(A, B, float(radius), float(radius), restitution=restitution, max_impulse=None)
+                except Exception:
+                    pass
+            # Simple projection + restitution per substep for each sphere (skip scripted)
             for rb in (A, B):
+                if rb.scripted_trajectory is not None:
+                    continue
                 pos = rb.position.to_numpy()
                 vel = rb.velocity.to_numpy()
                 n = np.array([0.0, 1.0, 0.0], dtype=np.float32)
@@ -541,6 +705,12 @@ def run_two_spheres(frames=90, dt=1/90.0, out_dir='render/output/rigid_ti_frames
                         vel = np.dot(vel, n) * n + (1.0 - float(tangential_damping)) * vt
                     rb.position[None] = pos
                     rb.velocity[None] = vel
+                    # enforce no-slip for each sphere at ground contact
+                    if enforce_no_slip:
+                        try:
+                            enforce_no_slip_sphere_plane(rb, n_vec=[0.0, 1.0, 0.0], radius=float(radius), mass=float(mass), mu=float(mu_t))
+                        except Exception:
+                            pass
         export_obj(A, os.path.join(out_dir, f'frame_{frame:04d}_body0.obj'))
         export_obj(B, os.path.join(out_dir, f'frame_{frame:04d}_body1.obj'))
         if frame % 60 == 0:
@@ -606,6 +776,7 @@ if __name__ == '__main__':
     ap.add_argument('--tangential_damping', type=float, default=0.0, help='fractional damping applied to tangential velocity on impact (0..1)')
     ap.add_argument('--mu_t', type=float, default=0.2, help='tangential Coulomb friction coefficient')
     ap.add_argument('--c_t', type=float, default=5000.0, help='tangential viscous damping for contacts')
+    ap.add_argument('--enforce_no_slip', action='store_true', help='enforce no-slip rolling at plane contact for spheres')
     # spheres_box specific
     ap.add_argument('--num', type=int, default=8)
     ap.add_argument('--radius', type=float, default=0.2)
@@ -626,7 +797,7 @@ if __name__ == '__main__':
         run_sphere_drop(frames=args.frames, dt=args.dt, out_dir=args.out,
                         gravity=(gx,gy,gz), stiffness=args.stiffness, damping=args.damping, margin=args.margin,
                         restitution=args.restitution, tangential_damping=args.tangential_damping,
-                        mu_t=args.mu_t, c_t=args.c_t)
+                        mu_t=args.mu_t, c_t=args.c_t, enforce_no_slip=bool(args.enforce_no_slip))
     elif args.mode == 'two_spheres':
         # args.posA/velA/posB/velB are lists of three floats now
         posA = tuple(args.posA)
@@ -639,7 +810,7 @@ if __name__ == '__main__':
                         posA=posA, velA=velA, posB=posB, velB=velB,
                         max_speed=args.max_speed, max_omega=args.max_omega, substeps=args.substeps,
                         ground_y=args.ground_y, restitution=args.restitution, tangential_damping=args.tangential_damping,
-                        mu_t=args.mu_t, c_t=args.c_t)
+                        mu_t=args.mu_t, c_t=args.c_t, enforce_no_slip=bool(args.enforce_no_slip))
     else:
         # spheres in box: 6 planes as container
         bx, by, bz = [float(x) for x in args.box.split(',')]
@@ -661,26 +832,30 @@ if __name__ == '__main__':
         for frame in range(args.frames):
             # gravity
             dt_step = float(args.dt) / float(args.substeps)
-            for _ in range(int(args.substeps)):
+            for s in range(int(args.substeps)):
+                t = frame * float(args.dt) + s * dt_step
                 for rb in bodies:
-                    apply_gravity(rb, float(args.mass), float(gx), float(gy), float(gz))
+                    if rb.scripted_trajectory is None:
+                        apply_gravity(rb, float(args.mass), float(gx), float(gy), float(gz))
                 # pairwise contacts
                 n = len(bodies)
                 for i in range(n):
                     for j in range(i+1, n):
-                        rigid_rigid_penalty(bodies[i], bodies[j], float(args.stiffness), float(args.damping), float(args.margin))
-                        rigid_rigid_penalty(bodies[j], bodies[i], float(args.stiffness), float(args.damping), float(args.margin))
+                        if (bodies[i].scripted_trajectory is None) and (bodies[j].scripted_trajectory is None):
+                            rigid_rigid_penalty(bodies[i], bodies[j], float(args.stiffness), float(args.damping), float(args.margin))
+                            rigid_rigid_penalty(bodies[j], bodies[i], float(args.stiffness), float(args.damping), float(args.margin))
                 # box planes: +-x, +-y, +-z
                 for rb in bodies:
-                    mesh_plane_penalty(rb, 0.0, 1.0, 0.0,  by/2.0, float(args.stiffness), float(args.damping), float(args.margin), float(args.mu_t), float(args.c_t), 1e4)
-                    mesh_plane_penalty(rb, 0.0,-1.0, 0.0,  by/2.0, float(args.stiffness), float(args.damping), float(args.margin), float(args.mu_t), float(args.c_t), 1e4)
-                    mesh_plane_penalty(rb, 1.0, 0.0, 0.0,  bx/2.0, float(args.stiffness), float(args.damping), float(args.margin), float(args.mu_t), float(args.c_t), 1e4)
-                    mesh_plane_penalty(rb,-1.0, 0.0, 0.0,  bx/2.0, float(args.stiffness), float(args.damping), float(args.margin), float(args.mu_t), float(args.c_t), 1e4)
-                    mesh_plane_penalty(rb, 0.0, 0.0, 1.0,  bz/2.0, float(args.stiffness), float(args.damping), float(args.margin), float(args.mu_t), float(args.c_t), 1e4)
-                    mesh_plane_penalty(rb, 0.0, 0.0,-1.0,  bz/2.0, float(args.stiffness), float(args.damping), float(args.margin), float(args.mu_t), float(args.c_t), 1e4)
-                # integrate
+                    if rb.scripted_trajectory is None:
+                        mesh_plane_penalty(rb, 0.0, 1.0, 0.0,  by/2.0, float(args.stiffness), float(args.damping), float(args.margin), float(args.mu_t), float(args.c_t), 1e4)
+                        mesh_plane_penalty(rb, 0.0,-1.0, 0.0,  by/2.0, float(args.stiffness), float(args.damping), float(args.margin), float(args.mu_t), float(args.c_t), 1e4)
+                        mesh_plane_penalty(rb, 1.0, 0.0, 0.0,  bx/2.0, float(args.stiffness), float(args.damping), float(args.margin), float(args.mu_t), float(args.c_t), 1e4)
+                        mesh_plane_penalty(rb,-1.0, 0.0, 0.0,  bx/2.0, float(args.stiffness), float(args.damping), float(args.margin), float(args.mu_t), float(args.c_t), 1e4)
+                        mesh_plane_penalty(rb, 0.0, 0.0, 1.0,  bz/2.0, float(args.stiffness), float(args.damping), float(args.margin), float(args.mu_t), float(args.c_t), 1e4)
+                        mesh_plane_penalty(rb, 0.0, 0.0,-1.0,  bz/2.0, float(args.stiffness), float(args.damping), float(args.margin), float(args.mu_t), float(args.c_t), 1e4)
+                # integrate or follow via unified step
                 for k, rb in enumerate(bodies):
-                    rb.update(dt_step, float(args.max_speed), float(args.max_omega))
+                    rb.step(t, dt_step, float(args.max_speed), float(args.max_omega))
             for k, rb in enumerate(bodies):
                 export_obj(rb, os.path.join(args.out, f'frame_{frame:04d}_body{k}.obj'))
             if frame % 60 == 0:

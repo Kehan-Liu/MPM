@@ -1,3 +1,8 @@
+## 12.3
+By LHZ
+
+- Add trajectory controlled module for rigid body simulator.
+
 ## 12.1
 By LKH
 
