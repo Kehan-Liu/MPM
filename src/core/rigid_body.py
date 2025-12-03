@@ -4,6 +4,7 @@ from src.objects import RigidObject
 import taichi as ti
 import numpy as np
 
+
 @ti.data_oriented
 class RigidBody:
     def __init__(self, rigid_object: RigidObject):
@@ -68,6 +69,11 @@ class RigidBody:
         self.rotation_matrix[None] = self.quat_wxyz_to_matrix(rigid_object.orientation)
         self.collision_threshold = rigid_object.collision_threshold
         self.fixed = not rigid_object.is_dynamic
+        self.restitution = ti.field(dtype=ti.f32, shape=())
+        self.restitution[None] = rigid_object.material.restitution
+        self.friction = ti.field(dtype=ti.f32, shape=())
+        self.friction[None] = rigid_object.material.friction
+        self.num_contacts = ti.field(dtype=ti.i32, shape=())
 
         self.scripted_trajectory = rigid_object.scripted_trajectory
 
@@ -166,6 +172,20 @@ class RigidBody:
         )
         self.inertia[None] = inertia_tensor
         self.inv_inertia[None] = inertia_tensor.inverse()
+
+    @ti.func
+    def get_inverse_mass_matrix(self, point, normal):
+        r = point - self.position[None]
+        # w = 1/m + (r x n)^T I_inv (r x n)
+        # r x n
+        rxn = r.cross(normal)
+        # I_inv in world space
+        I_inv = (
+            self.rotation_matrix[None]
+            @ self.inv_inertia[None]
+            @ self.rotation_matrix[None].transpose()
+        )
+        return 1.0 / self.mass[None] + rxn.dot(I_inv @ rxn)
 
     @ti.func
     def apply_impulse_at_point(
@@ -418,6 +438,4 @@ class RigidBody:
             self.follow_trajectory(t, dt)
         else:
             self.update(dt, max_speed=100.0, max_omega=50.0)
-        self.rotation_matrix[None] = self.quat_wxyz_to_matrix(
-            self.orientation[None]
-        )
+        self.rotation_matrix[None] = self.quat_wxyz_to_matrix(self.orientation[None])

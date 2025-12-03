@@ -15,8 +15,8 @@ Water = MPMObject(
     material=MPMMaterial(model=MPMModel.JELLY, E=1e5, density=800),
 )
 
-Cube = RigidObject(
-    meshdir="meshes/cube.obj",
+Ball = RigidObject(
+    meshdir="Ball",
     position=(0.5, 0.8, 0.5),
     mass=1.0,
     material=RigidMaterial(kh=1, friction=0.5),
@@ -31,7 +31,7 @@ Knife = RigidObject(
 )
 
 scene.add_mpm_object(Water)
-scene.add_rigid_object(Cube)
+scene.add_rigid_object(Ball)
 solver = MPMSolver(scene)
 
 window = ti.ui.Window("MPM", (1024, 1024), vsync=True)
@@ -57,7 +57,7 @@ for frame in range(300):
     ui_scene.ambient_light((0.5, 0.5, 0.5))
 
     ui_scene.particles(solver.p_x, radius=0.005, color=(0.4, 0.7, 1.0))
-    ui_scene.particles(solver.rigid.positions, radius=0.02, color=(1.0, 0.5, 0.5))
+    ui_scene.particles(solver.rigid.positions, radius=0.15, color=(1.0, 0.5, 0.5))
 
     canvas.scene(ui_scene)
     video_manager.write_frame(window.get_image_buffer_as_numpy())

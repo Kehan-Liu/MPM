@@ -10,6 +10,39 @@ MAX_BP = 400000
 
 
 @ti.kernel
+def count_rigid_rigid_contacts(
+    A: ti.template(),
+    B: ti.template(),
+    margin: ti.f32,
+):
+    for i in range(A.vertices.shape[0]):
+        xA = A.position[None] + A.rotation_matrix[None] @ A.vertices[i]
+        phi, n = B.signed_distance(xA)
+        if phi < 0 and ti.abs(phi) > margin:
+            A.num_contacts[None] += 1
+            B.num_contacts[None] += 1
+
+
+@ti.kernel
+def count_mesh_plane_contacts(
+    rb: ti.template(),
+    nx: ti.f32,
+    ny: ti.f32,
+    nz: ti.f32,
+    h: ti.f32,
+    margin: ti.f32,
+):
+    n = ti.Vector([nx, ny, nz])
+    for i in range(rb.faces.shape[0]):
+        for k in ti.static(range(3)):
+            vidx = rb.faces[i][k]
+            x = rb.position[None] + rb.rotation_matrix[None] @ rb.vertices[vidx]
+            phi = x.dot(n) - h
+            if phi < 0 and ti.abs(phi) > margin:
+                rb.num_contacts[None] += 1
+
+
+@ti.kernel
 def rigid_rigid_penalty(
     A: ti.template(),
     B: ti.template(),
@@ -27,7 +60,59 @@ def rigid_rigid_penalty(
             vA = A.get_velocity_at_point(cp)
             vB = B.get_velocity_at_point(cp)
             vn = (vA - vB).dot(n)
-            F = (-stiffness * phi - damping * vn) * n
+
+            # Stiffness force (position correction)
+            f_stiff = -stiffness * phi
+
+            # Restitution impulse
+            restitution = ti.max(A.restitution[None], B.restitution[None])
+            # Only apply restitution if approaching
+            f_rest = 0.0
+            if vn < 0:
+                # J = -(1+e) vn / K
+                KA = A.get_inverse_mass_matrix(cp, n)
+                KB = B.get_inverse_mass_matrix(cp, -n)  # normal for B is -n
+                K = KA + KB
+                J = -(1.0 + restitution) * vn / K
+
+                # Scale by number of contacts to avoid overshoot
+                # We use the average contact count of the two bodies as a heuristic
+                # or just A's count since we are iterating A's vertices?
+                # If we use A.num_contacts, it's the total contacts on A.
+                # This is a reasonable scaling factor.
+                scale = 1.0 / ti.max(1.0, ti.cast(A.num_contacts[None], ti.f32))
+                f_rest = (J / dt) * scale
+
+            # Damping force (only if not separating fast enough? or always?)
+            # If we use restitution, we might want to reduce damping.
+            # But let's keep damping for stability, but maybe clamp it?
+            f_damp = -damping * vn
+
+            # Combine
+            # If we have restitution, f_rest handles the velocity change.
+            # So we might not need f_damp.
+            # But f_stiff is needed.
+
+            f_n = f_stiff + f_damp + f_rest
+
+            # Clamp to be repulsive only
+            if f_n < 0:
+                f_n = 0.0
+
+            F = f_n * n
+
+            # Friction
+            vt = (vA - vB) - vn * n
+            vt_norm = vt.norm()
+            f_t = ti.Vector([0.0, 0.0, 0.0])
+            mu = ti.max(A.friction[None], B.friction[None])
+            if vt_norm > 1e-8:
+                # Coulomb friction
+                f_fric = mu * f_n
+                f_t = -f_fric * (vt / vt_norm)
+
+            F += f_t
+
             A.apply_impulse_at_point(F * dt, cp)
             B.apply_impulse_at_point(-F * dt, cp)
 
@@ -42,7 +127,7 @@ def mesh_plane_penalty(
     stiffness: ti.f32,
     damping: ti.f32,
     margin: ti.f32,
-    mu_t: ti.f32,
+    mu_t: ti.f32,  # We use rb.friction instead
     c_t: ti.f32,
     max_fn: ti.f32,
     dt: ti.f32,
@@ -60,18 +145,35 @@ def mesh_plane_penalty(
                 v = rb.get_velocity_at_point(cp)
                 vn = v.dot(n)
                 vt = v - vn * n
-                # normal spring-damper with soft cap
-                f_n = -stiffness * phi - damping * vn
+
+                f_stiff = -stiffness * phi
+
+                restitution = rb.restitution[None]
+                f_rest = 0.0
+                if vn < 0:
+                    # J = -(1+e) vn / K
+                    # For plane, mass is infinite, so K_plane = 0.
+                    K = rb.get_inverse_mass_matrix(cp, n)
+                    J = -(1.0 + restitution) * vn / K
+                    scale = 1.0 / ti.max(1.0, ti.cast(rb.num_contacts[None], ti.f32))
+                    f_rest = (J / dt) * scale
+
+                f_damp = -damping * vn
+
+                f_n = f_stiff + f_damp + f_rest
+
                 if f_n > max_fn:
                     f_n = max_fn
-                if f_n < -max_fn:
-                    f_n = -max_fn
+                if f_n < 0:
+                    f_n = 0.0
+
                 # tangential viscous + Coulomb limit
                 f_t = ti.Vector([0.0, 0.0, 0.0])
                 vt_norm = vt.norm()
+                mu = rb.friction[None]
                 if vt_norm > 1e-8:
                     f_visc = -c_t * vt
-                    limit = mu_t * ti.abs(f_n)
+                    limit = mu * ti.abs(f_n)
                     f_visc_norm = f_visc.norm()
                     if f_visc_norm > limit:
                         f_t = -limit * (vt / vt_norm)
@@ -233,18 +335,59 @@ class Rigid:
         self.angular_impulses[rb_id] += r.cross(impulse)
 
     def resolve_collisions(self):
+        # Reset contact counts
+        for i in range(self.n_rigid):
+            self.rigid_objects[i].num_contacts[None] = 0
+
+        # Count contacts
+        margin = 1e-3
+        for i in range(self.n_rigid):
+            for j in range(i + 1, self.n_rigid):
+                count_rigid_rigid_contacts(
+                    self.rigid_objects[i], self.rigid_objects[j], margin
+                )
+                count_rigid_rigid_contacts(
+                    self.rigid_objects[j], self.rigid_objects[i], margin
+                )
+
+        # Plane collision (box boundaries [0, 1]^3)
+        for i in range(self.n_rigid):
+            # y > 0
+            count_mesh_plane_contacts(self.rigid_objects[i], 0.0, 1.0, 0.0, 0.0, margin)
+            # y < 1
+            count_mesh_plane_contacts(
+                self.rigid_objects[i], 0.0, -1.0, 0.0, -1.0, margin
+            )
+            # x > 0
+            count_mesh_plane_contacts(self.rigid_objects[i], 1.0, 0.0, 0.0, 0.0, margin)
+            # x < 1
+            count_mesh_plane_contacts(
+                self.rigid_objects[i], -1.0, 0.0, 0.0, -1.0, margin
+            )
+            # z > 0
+            count_mesh_plane_contacts(self.rigid_objects[i], 0.0, 0.0, 1.0, 0.0, margin)
+            # z < 1
+            count_mesh_plane_contacts(
+                self.rigid_objects[i], 0.0, 0.0, -1.0, -1.0, margin
+            )
+
         # Pairwise rigid-rigid collision
         stiffness = 5e4
-        damping = 1e4
-        margin = 1e-3
-        
-        print(self.n_rigid)
-        print(self.rigid_objects)
+        damping = 6000
+
         for i in range(self.n_rigid):
             for j in range(i + 1, self.n_rigid):
                 rigid_rigid_penalty(
                     self.rigid_objects[i],
                     self.rigid_objects[j],
+                    stiffness,
+                    damping,
+                    margin,
+                    self.dt,
+                )
+                rigid_rigid_penalty(
+                    self.rigid_objects[j],
+                    self.rigid_objects[i],
                     stiffness,
                     damping,
                     margin,
@@ -256,8 +399,6 @@ class Rigid:
         c_t = 5000.0
         max_force = 1e4
 
-        print(self.n_rigid)
-        print(self.rigid_objects)
         for i in range(self.n_rigid):
             # y > 0
             mesh_plane_penalty(
