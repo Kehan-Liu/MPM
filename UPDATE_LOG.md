@@ -1,4 +1,9 @@
 ## 12.3
+By LKH
+
+- Merge rigid body collision handling into the main simulation loop.
+
+## 12.3
 By LHZ
 
 - Add trajectory controlled module for rigid body simulator.

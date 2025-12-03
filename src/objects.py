@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional, Callable
 from enum import Enum
+import numpy as np
 
 
 class MPMModel(Enum):
@@ -31,6 +32,8 @@ class RigidObject:
     meshdir: str
     position: Tuple[float, float, float]
     mass: float
+    collision_threshold: float = np.finfo(float).tiny
+    scale: Tuple[float, float, float] = (1.0, 1.0, 1.0)
     orientation: Tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
     velocity: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     angular_velocity: Tuple[float, float, float] = (0.0, 0.0, 0.0)
@@ -40,6 +43,7 @@ class RigidObject:
             Tuple[Tuple[float, float, float], Tuple[float, float, float, float]],
         ]
     ] = None
+    is_dynamic: bool = True
     material: RigidMaterial = field(default_factory=RigidMaterial)
 
 
@@ -47,6 +51,7 @@ class RigidObject:
 class MPMObject:
     meshdir: str
     position: Tuple[float, float, float]
+    scale: Tuple[float, float, float] = (1.0, 1.0, 1.0)
     num_particles: int = 10000
     material: MPMMaterial = field(default_factory=MPMMaterial)
 

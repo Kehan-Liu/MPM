@@ -31,7 +31,7 @@ Knife = RigidObject(
 )
 
 scene.add_mpm_object(Water)
-scene.add_rigid_object(Knife)
+scene.add_rigid_object(Cube)
 solver = MPMSolver(scene)
 
 window = ti.ui.Window("MPM", (1024, 1024), vsync=True)

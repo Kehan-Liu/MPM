@@ -1,11 +1,11 @@
 import taichi as ti
 from src.core.rigid import Rigid
+from src.core.utils import *
 
 # from src.core.cloth import Cloth
 from src.objects import RigidObject, MPMObject, ClothObject, MPMModel
 from src.scene import Scene
 from typing import List
-import trimesh
 import numpy as np
 
 CATEGORY_WATER = int(MPMModel.WATER.value)
@@ -101,7 +101,10 @@ class MPMSolver:
         for i, obj in enumerate(self.mpm_objects):
             # Load mesh
             try:
-                mesh = trimesh.load(obj.meshdir, force="mesh")
+                if obj.meshdir in GEOMS:
+                    mesh = GEOMS[obj.meshdir](obj.scale)
+                else:
+                    mesh = trimesh.load(obj.meshdir, force="mesh")
                 if mesh.is_watertight:
                     vol = mesh.volume
                 else:
