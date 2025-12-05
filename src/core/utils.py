@@ -4,7 +4,7 @@ import trimesh
 def Ball(scale=(1.0, 1.0, 1.0)):
     center = [0, 0, 0]
     radius = 0.15 * min(scale)
-    return trimesh.creation.icosphere(radius=radius, center=center, subdivisions=2)
+    return trimesh.creation.icosphere(radius=radius, center=center, subdivisions=4)
 
 
 def Box(scale=(1.0, 1.0, 1.0)):

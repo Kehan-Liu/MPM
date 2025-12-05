@@ -1,4 +1,11 @@
 ## 12.5
+By LHZ
+
+- Fix the bug after merge
+- Solve the unappropriate collision response between rigid bodies and box surfaces.
+- Make sure Solid Solid collision works well between balls and ball & bunny
+
+## 12.5
 By LKH
 
 - Finish debug CPIC, Jelly-rigid coupling works well now.

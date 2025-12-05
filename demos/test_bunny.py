@@ -2,17 +2,10 @@ from src.core.rigid import Rigid
 from src.scene import Scene
 from src.objects import *
 import taichi as ti
+import numpy as np
 import os
 
 ti.init(arch=ti.cuda)
-
-Water = MPMObject(
-    meshdir="meshes/cube.obj",
-    position=(0.3, 0.3, 0.03),
-    num_particles=60000,
-    material=MPMMaterial(model=MPMModel.JELLY, E=5e4, density=800),
-)
-
 # Choose a meeting point and time so balls starting at different heights collide in mid-air
 g = (0.0, 0.0, -9.8)
 meet_t = 0.6  # seconds until meeting
@@ -35,7 +28,7 @@ def compute_initial_velocity(pos, meet_p, meet_t, g):
 vel1 = compute_initial_velocity(pos1, meet_p, meet_t, g)
 vel2 = compute_initial_velocity(pos2, meet_p, meet_t, g)
 
-Ball1 = RigidObject(
+Ball = RigidObject(
     meshdir="Ball",
     position=pos1,
     mass=10.0,
@@ -43,8 +36,8 @@ Ball1 = RigidObject(
     material=RigidMaterial(kh=10, friction=0.5, restitution=0.2, splitter=0.1),
 )
 
-Ball2 = RigidObject(
-    meshdir="Ball",
+Bunny = RigidObject(
+    meshdir="meshes/bunny.obj",
     position=pos2,
     mass=10.0,
     velocity=vel2,
@@ -54,7 +47,7 @@ import time
 current_time = 0.0
 substeps = 40  # 降低每帧子步数以提升实时FPS；需要更精细物理可增大
 last_t = time.time()
-solver = Rigid([Ball1, Ball2], dx=0.01, dt=5e-3/substeps, gravity=(0, 0, -9.8), damping = 50, margin=1e-3, stiffness=5e4)
+solver = Rigid([Ball, Bunny], dx=0.01, dt=5e-3/substeps, gravity=(0, 0, -9.8), damping = 100, margin=1e-3, stiffness=5e4)
 
 window = ti.ui.Window("Rigid", (1024, 1024), vsync=False)
 canvas = window.get_canvas()
@@ -79,13 +72,28 @@ for frame in range(300):
     ui_scene.point_light(pos=(0.5, 1.5, 1.5), color=(1, 1, 1))
     ui_scene.ambient_light((0.5, 0.5, 0.5))
 
-    ui_scene.particles(solver.positions, radius=0.15, color=(1.0, 0.5, 0.5))
+    # Render each rigid body's mesh transformed by current pose
+    try:
+        # read all poses in numpy (shape: n,3) and rotations (n,3,3)
+        poses = solver.positions.to_numpy()
+        rots = solver.rotation_matrices.to_numpy()
+        for i, rb in enumerate(solver.rigid_objects):
+            verts_local = rb.mesh.vertices.astype(np.float32)
+            faces = rb.mesh.faces.astype(np.int32)
+            R = rots[i]
+            p = poses[i]
+            verts_world = (verts_local @ R.T) + p.reshape(1, 3)
+            # Taichi UI accepts numpy arrays for mesh
+            ui_scene.mesh(verts_world, faces, color=(0.8, 0.6, 0.5))
+    except Exception:
+        # fallback: draw centroids as particles
+        ui_scene.particles(solver.positions, radius=0.15, color=(1.0, 0.5, 0.5))
 
     canvas.scene(ui_scene)
     video_manager.write_frame(window.get_image_buffer_as_numpy())
     window.show()
-    os.makedirs("results/test_rigid", exist_ok=True)
-    solver.export(frame, "results/test_rigid")
+    os.makedirs("results/test_bunny", exist_ok=True)
+    solver.export(frame, "results/test_bunny")
     # 简易FPS统计
     now = time.time()
     dt = now - last_t
