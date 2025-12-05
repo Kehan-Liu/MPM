@@ -1,8 +1,12 @@
+import sys
+import os
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 from src.core.mpm_solver import MPMSolver
 from src.scene import Scene
 from src.objects import *
 import taichi as ti
-import os
 
 ti.init(arch=ti.gpu)
 

@@ -1,9 +1,13 @@
+import sys
+import os
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 from src.core.rigid import Rigid
 from src.scene import Scene
 from src.objects import *
 import taichi as ti
 import numpy as np
-import os
 
 ti.init(arch=ti.cuda)
 # Choose a meeting point and time so balls starting at different heights collide in mid-air
@@ -15,6 +19,7 @@ meet_p = (0.5, 0.5, 0.5)  # meeting position in the [0,1]^3 box
 pos1 = (0.3, 0.3, 0.8)
 pos2 = (0.7, 0.7, 0.6)
 
+
 def compute_initial_velocity(pos, meet_p, meet_t, g):
     # v0 = (p - r0 - 0.5*g*t^2) / t
     gx, gy, gz = g
@@ -24,6 +29,7 @@ def compute_initial_velocity(pos, meet_p, meet_t, g):
     vy = (py - ry - 0.5 * gy * meet_t * meet_t) / meet_t
     vz = (pz - rz - 0.5 * gz * meet_t * meet_t) / meet_t
     return (vx, vy, vz)
+
 
 vel1 = compute_initial_velocity(pos1, meet_p, meet_t, g)
 vel2 = compute_initial_velocity(pos2, meet_p, meet_t, g)
@@ -44,10 +50,19 @@ Bunny = RigidObject(
     material=RigidMaterial(kh=10, friction=0.5, restitution=0.2, splitter=0.1),
 )
 import time
+
 current_time = 0.0
 substeps = 40  # 降低每帧子步数以提升实时FPS；需要更精细物理可增大
 last_t = time.time()
-solver = Rigid([Ball, Bunny], dx=0.01, dt=5e-3/substeps, gravity=(0, 0, -9.8), damping = 100, margin=1e-3, stiffness=5e4)
+solver = Rigid(
+    [Ball, Bunny],
+    dx=0.01,
+    dt=5e-3 / substeps,
+    gravity=(0, 0, -9.8),
+    damping=100,
+    margin=1e-3,
+    stiffness=5e4,
+)
 
 window = ti.ui.Window("Rigid", (1024, 1024), vsync=False)
 canvas = window.get_canvas()
