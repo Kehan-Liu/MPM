@@ -131,7 +131,9 @@ class MPMSolver:
 
             iter_count = 0
             while len(samples) < obj.num_particles and iter_count < 100:
-                print(f"Sampling particles for object {i}, iteration {iter_count}, collected {len(samples)} particles")
+                print(
+                    f"Sampling particles for object {i}, iteration {iter_count}, collected {len(samples)} particles"
+                )
                 needed = obj.num_particles - len(samples)
                 batch_size = min(max(needed * 2, 1000), 10000)
                 points = np.random.uniform(bounds[0], bounds[1], (batch_size, 3))
@@ -297,6 +299,7 @@ class MPMSolver:
 
         # P2G
         for p in range(self.n_particles[None]):
+            self.p_v[p] += self.dt * self.gravity[None]  # Apply gravity to particle
             base = (self.p_x[p] * self.inv_dx - 0.5).cast(int)
             fx = self.p_x[p] * self.inv_dx - base.cast(float)
             w = [0.5 * (1.5 - fx) ** 2, 0.75 - (fx - 1.0) ** 2, 0.5 * (fx - 0.5) ** 2]
@@ -364,7 +367,7 @@ class MPMSolver:
         for I in ti.grouped(self.grid_m):
             if self.grid_m[I] > 0:
                 self.grid_v[I] = (1 / self.grid_m[I]) * self.grid_v[I]
-                self.grid_v[I] += self.dt * self.gravity[None]
+                # self.grid_v[I] += self.dt * self.gravity[None] # Gravity applied to particles
                 # Simple boundary condition !!
                 for d in ti.static(range(3)):
                     if I[d] < 3 and self.grid_v[I][d] < 0:
@@ -400,21 +403,18 @@ class MPMSolver:
                     if flag == 0:
                         gpos = (gi.cast(float)) * self.dx
                         gr = self.grid_r[gi]
-                        g_rigid_vel = self.rigid.get_rigid_velocity(
-                            gr, gpos
-                        )
+                        g_rigid_vel = self.rigid.get_rigid_velocity(gr, gpos)
                         delta_v = self.p_v[p] - g_rigid_vel
                         dv_dot_n = delta_v.dot(self.p_n[p, gr])
                         if dv_dot_n < 0:
                             delta_vt = delta_v - dv_dot_n * self.p_n[p, gr]
-                            new_g_vt = (
-                                ti.max(
+                            vt_norm = delta_vt.norm()
+                            new_g_vt = self.p_v[p]
+                            if vt_norm > 1e-10:
+                                new_g_vt = ti.max(
                                     0.0,
-                                    delta_vt.norm()
-                                    + self.rigid.friction[gr] * dv_dot_n,
-                                )
-                                * delta_vt.normalized()
-                            )
+                                    vt_norm + self.rigid.friction[gr] * dv_dot_n,
+                                ) * (delta_vt / vt_norm)
                             new_g_vn = (
                                 self.rigid.restitution[gr]
                                 * (-dv_dot_n)
@@ -426,7 +426,11 @@ class MPMSolver:
                                 gpos,
                                 (self.p_v[p] - g_v) * p_mass * weight,
                             )
-                        g_v += self.p_n[p, gr] * self.rigid.splitter[gr] # splitting them apart
+                        else:
+                            g_v = self.p_v[p]
+                        g_v += (
+                            self.p_n[p, gr] * self.rigid.splitter[gr]
+                        )  # splitting them apart
                     new_v += weight * g_v
                     dpos = offset.cast(float) - fx
                     new_C += 4 * weight * g_v.outer_product(dpos) * self.inv_dx
@@ -438,11 +442,12 @@ class MPMSolver:
             # penalty force
             for r in ti.static(range(self.rigid.n_rigid)):
                 if self.p_d[p][r] < 0:
-                    penalty_force = (
+                    # Velocity-based penalty (Problem 1 fix)
+                    delta_v_penalty = (
                         self.rigid.kh[r] * (-self.p_d[p][r]) * self.p_n[p, r]
                     )
-                    self.p_v[p] += (self.dt / p_mass) * penalty_force
-                    self.rigid.apply_impulse(r, self.p_x[p], -penalty_force * self.dt)
+                    self.p_v[p] += delta_v_penalty
+                    self.rigid.apply_impulse(r, self.p_x[p], -delta_v_penalty * p_mass)
 
     def export(self, frame, output_dir: str):
         self.rigid.export(frame, output_dir)
@@ -468,7 +473,6 @@ class MPMSolver:
         self.g2p()
 
     def step(self, time):
-        print("MPM step at time:", time)
         self.mpm_step()
         self.rigid.step(time)
         # self.cloth.step()

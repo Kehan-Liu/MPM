@@ -1,0 +1,61 @@
+dataclasses
+- Scene:
+  - list of rigid objects
+  - list of cloth objects
+  - list of mpm objects
+  - rendering parameters
+  - dt
+  - gravity
+  - total_particles
+  - n_grid
+  - add_rigid_object()
+  - add_cloth_object()
+  - add_mpm_object()
+
+- RigidObject:
+  - meshdir
+  - position
+  - orientation
+  - velocity
+  - angular_velocity
+  - mass
+  - is_scripted
+  - scripted_trajectory
+  - rigid_material
+
+- MPMObject:
+  - meshdir
+  - position
+  - density
+  - mpm_material
+
+
+- MPMSolver(Scene): 
+  - rigid
+  - cloth
+  - grid
+  - particles
+  - dt
+  - emit_particles()
+  - step()
+
+- Rigid:
+  - vertices
+  - faces
+  - vertex_idx
+  - face_idx
+  - position
+  - orientation
+  - velocity
+  - angular_velocity
+  - impulse
+  - angular_impulse
+  - mass
+  - inertia_tensor
+  - is_scripted
+  - scripted_trajectory
+  - kh
+  - mu
+  - boundary_particles
+  - resolve_collisions()
+  - step()

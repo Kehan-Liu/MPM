@@ -6,20 +6,20 @@ import mathutils
 
 # --- Configuration ---
 ASSETS_PATH = "assets.blend"  # Path to your pre-made file
-MPM_MATERIAL_NAME = "Jelly"  # Must match a material name in assets.blend
+MPM_MATERIAL_NAME = "Water"  # Must match a material name in assets.blend
 RB_MATERIAL_NAME = "RigidMat"  # Must match a material name in assets.blend
 
 # Meshing Settings
 PARTICLE_RADIUS = 1e-2
-VOXEL_SIZE = 1.0 / 128.0
+VOXEL_SIZE = 1.0 / 64.0
 THRESHOLD = 1.0
 
 # Scene Settings
-CAMERA_POS = (3.0, -3.0, 2.5)
+CAMERA_POS = (-2.0, -2.0, 1.5)
 CAMERA_LOOKAT = (0.5, 0.5, 0.5)
 LIGHT_POS = (5.0, 5.0, 10.0)
 LIGHT_ENERGY = 5.0
-HDRI_PATH = "background.exr"  # Set to None or invalid path to skip
+HDRI_PATH = "assets/background.exr"  # Set to None or invalid path to skip
 
 
 def setup_geometry_nodes(obj):
@@ -220,6 +220,24 @@ def setup_environment():
         node_bg.inputs["Color"].default_value = (0.1, 0.1, 0.1, 1.0)
 
 
+def setup_ground():
+    """Sets up a ground plane at z=0."""
+    bpy.ops.mesh.primitive_plane_add(size=100, location=(0, 0, 0))
+    plane = bpy.context.active_object
+    plane.name = "Ground"
+
+    # Create a simple material
+    mat = bpy.data.materials.new(name="GroundMaterial")
+    mat.use_nodes = True
+    nodes = mat.node_tree.nodes
+    bsdf = nodes.get("Principled BSDF")
+    if bsdf:
+        bsdf.inputs["Base Color"].default_value = (0.5, 0.5, 0.5, 1.0)
+        bsdf.inputs["Roughness"].default_value = 1.0
+
+    plane.data.materials.append(mat)
+
+
 def render_frame(ply_file, json_file, output_file):
     # 0. Load Assets File (Scene Setup)
     if os.path.exists(ASSETS_PATH):
@@ -232,6 +250,7 @@ def render_frame(ply_file, json_file, output_file):
     setup_camera()
     setup_lighting()
     setup_environment()
+    setup_ground()
 
     # 1. Load Rigid Bodies
     load_rigid_bodies(json_file)

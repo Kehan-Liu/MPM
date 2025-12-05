@@ -1,6 +1,16 @@
 ## 12.5
 By LKH
 
+- Finish debug CPIC, Jelly-rigid coupling works well now.
+- Finish frame rendering for MPM objects.
+- Add more demos and meshes.
+- Add assets, including background hdri and materials.
+
+TODO: improve liquid simulation quality.
+
+## 12.5
+By LKH
+
 - Add surface reconstruction and rendering for MPM objects.
 - Rigid-rigid collision has problem, need to be fixed!
 

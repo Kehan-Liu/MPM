@@ -62,7 +62,9 @@ class RigidBody:
         self.mesh = trimesh.Trimesh(
             vertices=self.vertices.to_numpy(), faces=self.faces.to_numpy()
         )
-        self.get_inertia()  # inertia tensor relative to the center of mass with respect to the canonical frame
+        if rigid_object.is_dynamic and rigid_object.scripted_trajectory is None:
+            self.get_volume()
+            self.get_inertia()
         self.voxel = None
         self.num_particles = 0
         self.get_voxel()
@@ -106,30 +108,31 @@ class RigidBody:
 
     @ti.func
     def mass_center(self):
-        mesh_volume = ti.float32(0.0)
+        mesh_area = ti.float32(0.0)
         temp = ti.Vector([0.0, 0.0, 0.0])
 
         for i in range(self.faces.shape[0]):
-            # print(self.faces[i][0])
-            center = 0.25 * (
-                self.vertices[self.faces[i][0]]
-                + self.vertices[self.faces[i][1]]
-                + self.vertices[self.faces[i][2]]
-            )
-            volume = (
-                ti.math.dot(
-                    self.vertices[self.faces[i][0]],
-                    ti.math.cross(
-                        self.vertices[self.faces[i][1]], self.vertices[self.faces[i][2]]
-                    ),
-                )
-                / 6
-            )
-            mesh_volume += volume
-            temp += center * volume
+            v0 = self.vertices[self.faces[i][0]]
+            v1 = self.vertices[self.faces[i][1]]
+            v2 = self.vertices[self.faces[i][2]]
 
-        self.volume[None] = ti.abs(mesh_volume)
-        return temp / mesh_volume
+            center = (v0 + v1 + v2) / 3.0
+            area = 0.5 * (v1 - v0).cross(v2 - v0).norm()
+
+            mesh_area += area
+            temp += center * area
+
+        return temp / mesh_area
+    
+    @ti.kernel
+    def get_volume(self):
+        vol = ti.float32(0.0)
+        for i in range(self.faces.shape[0]):
+            v0 = self.vertices[self.faces[i][0]]
+            v1 = self.vertices[self.faces[i][1]]
+            v2 = self.vertices[self.faces[i][2]]
+            vol += v0.dot(v1.cross(v2)) / 6.0
+        self.volume[None] = ti.abs(vol)
 
     @ti.kernel
     def centralize(self):
