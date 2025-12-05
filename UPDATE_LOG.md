@@ -1,3 +1,9 @@
+## 12.5
+By LKH
+
+- Add surface reconstruction and rendering for MPM objects.
+- Rigid-rigid collision has problem, need to be fixed!
+
 ## 12.3
 By LKH
 

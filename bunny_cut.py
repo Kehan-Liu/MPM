@@ -6,31 +6,26 @@ import os
 
 ti.init(arch=ti.gpu)
 
-scene = Scene(gravity=(0, 0, -9.8))
+scene = Scene(gravity=(0, 0, -9.81))
 
-Water = MPMObject(
-    meshdir="meshes/cube.obj",
-    position=(0.3, 0.3, 0.03),
-    num_particles=60000,
-    material=MPMMaterial(model=MPMModel.JELLY, E=5e4, density=800),
+bunny = MPMObject(
+    meshdir="meshes/bunny.obj",
+    position=(0.5, 0.5, 0.5),
+    num_particles=200000,
+    material=MPMMaterial(model=MPMModel.JELLY, E=5e4, density=600),
 )
 
-Ball1 = RigidObject(
-    meshdir="Ball",
-    position=(0.5, 0.5, 0.8),
+Knife = RigidObject(
+    meshdir="meshes/quad-splitter.obj",
+    position=(0.5, 0.5, 0.1),
     mass=10.0,
-    material=RigidMaterial(kh=10, friction=0.5, splitter=0.1),
+    velocity=(0.0, 0.0, 0.0),
+    material=RigidMaterial(kh=1, friction=0.0, splitter=0.1),
+    is_dynamic=False,
 )
 
-Ball2 = RigidObject(
-    meshdir="Ball",
-    position=(0.5, 0.5, 0.2),
-    mass=10.0,
-    material=RigidMaterial(kh=10, friction=0.5, splitter=0.1),
-)
-
-scene.add_mpm_object(Water)
-scene.add_rigid_object(Ball)
+scene.add_mpm_object(bunny)
+scene.add_rigid_object(Knife)
 solver = MPMSolver(scene)
 
 window = ti.ui.Window("MPM", (1024, 1024), vsync=True)
@@ -61,7 +56,7 @@ for frame in range(300):
     canvas.scene(ui_scene)
     video_manager.write_frame(window.get_image_buffer_as_numpy())
     window.show()
-    solver.export(frame, "results/test_scene")
+    # solver.export(frame, "results/bunny_cut")
     print(f"Frame {frame} / 300")
 
 video_manager.make_video(gif=True, mp4=True)

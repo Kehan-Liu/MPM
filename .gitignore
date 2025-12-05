@@ -8,3 +8,4 @@ taichi_mpm/
 *.obj
 *.log
 results/
+rigid_meshes/

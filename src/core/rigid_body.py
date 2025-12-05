@@ -59,6 +59,9 @@ class RigidBody:
 
         self.mass[None] = rigid_object.mass
         self.centralize()  # centralize the mesh
+        self.mesh = trimesh.Trimesh(
+            vertices=self.vertices.to_numpy(), faces=self.faces.to_numpy()
+        )
         self.get_inertia()  # inertia tensor relative to the center of mass with respect to the canonical frame
         self.voxel = None
         self.num_particles = 0
@@ -174,20 +177,6 @@ class RigidBody:
         self.inv_inertia[None] = inertia_tensor.inverse()
 
     @ti.func
-    def get_inverse_mass_matrix(self, point, normal):
-        r = point - self.position[None]
-        # w = 1/m + (r x n)^T I_inv (r x n)
-        # r x n
-        rxn = r.cross(normal)
-        # I_inv in world space
-        I_inv = (
-            self.rotation_matrix[None]
-            @ self.inv_inertia[None]
-            @ self.rotation_matrix[None].transpose()
-        )
-        return 1.0 / self.mass[None] + rxn.dot(I_inv @ rxn)
-
-    @ti.func
     def apply_impulse_at_point(
         self, impulse: ti.types.vector(3, ti.f32), point: ti.types.vector(3, ti.f32)
     ):
@@ -271,49 +260,6 @@ class RigidBody:
                 best_phi = phi
                 best_n = n
         return best_phi, best_n
-
-    @ti.func
-    def check_collision(
-        self, point: ti.types.vector(3, ti.f32)
-    ) -> ti.types.vector(2, ti.f32):
-        min_distance = float("inf")  # Used to record the minimum collision distance
-        closest_normal = ti.Vector([0.0, 0.0, 0.0])  # Used to record the closest normal
-
-        for i in range(self.faces.shape[0]):
-            # Get the three vertices of a triangle
-            v0 = (
-                self.position[None]
-                + self.orientation[None] @ self.vertices[self.faces[i][0]]
-            )
-            v1 = (
-                self.position[None]
-                + self.orientation[None] @ self.vertices[self.faces[i][1]]
-            )
-            v2 = (
-                self.position[None]
-                + self.orientation[None] @ self.vertices[self.faces[i][2]]
-            )
-
-            # Compute the normal vector of the triangle
-            normal = (v1 - v0).cross(v2 - v0).normalized()
-
-            # Compute the distance of the point to the face
-            distance = abs((point - v0).dot(normal))
-
-            # If the distance is less than the threshold, a collision is considered to have occurred
-            if distance < self.collision_threshold:
-                if distance < min_distance:
-                    min_distance = distance
-                    closest_normal = normal
-
-        collision = 0
-        normal = ti.Vector([0.0, 0.0, 0.0])
-
-        if min_distance < float("inf"):
-            collision = 1
-            normal = closest_normal
-
-        return collision, normal
 
     @ti.func
     def get_velocity_at_point(
@@ -439,3 +385,8 @@ class RigidBody:
         else:
             self.update(dt, max_speed=100.0, max_omega=50.0)
         self.rotation_matrix[None] = self.quat_wxyz_to_matrix(self.orientation[None])
+
+    def export_centered_mesh(self, filepath):
+        """Export the rigid body's mesh, centered at the mass center."""
+        mesh = self.mesh.copy()
+        mesh.export(filepath)

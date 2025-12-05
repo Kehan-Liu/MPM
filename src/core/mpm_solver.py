@@ -7,6 +7,8 @@ from src.objects import RigidObject, MPMObject, ClothObject, MPMModel
 from src.scene import Scene
 from typing import List
 import numpy as np
+from plyfile import PlyData, PlyElement
+import os
 
 CATEGORY_WATER = int(MPMModel.WATER.value)
 CATEGORY_JELLY = int(MPMModel.JELLY.value)
@@ -29,6 +31,7 @@ class MPMSolver:
 
         # self.cloth = Cloth(scene.cloth_objects, self.dx, self.dt)
 
+        print("Initializing MPM Solver...")
         self.mpm_objects = scene.mpm_objects
         num_particles = sum([obj.num_particles for obj in scene.mpm_objects])
         self.p_x = ti.Vector.field(3, dtype=ti.f32, shape=num_particles)
@@ -84,6 +87,7 @@ class MPMSolver:
         self.init_mpm_particles()
 
     def init_mpm_materials(self):
+        print("Initializing MPM materials...")
         for i, obj in enumerate(self.mpm_objects):
             mat = obj.material
             self.material_density[i] = mat.density
@@ -95,6 +99,7 @@ class MPMSolver:
             self.material_type[i] = int(mat.model.value)
 
     def init_mpm_particles(self):
+        print("Initializing MPM particles...")
         all_p_x = []
         all_p_material = []
 
@@ -126,12 +131,13 @@ class MPMSolver:
 
             iter_count = 0
             while len(samples) < obj.num_particles and iter_count < 100:
+                print(f"Sampling particles for object {i}, iteration {iter_count}, collected {len(samples)} particles")
                 needed = obj.num_particles - len(samples)
-                batch_size = max(needed * 2, 1000)
+                batch_size = min(max(needed * 2, 1000), 10000)
                 points = np.random.uniform(bounds[0], bounds[1], (batch_size, 3))
-
+                print("start checking containment")
                 inside = mesh.contains(points)
-
+                print("containment check done")
                 samples.extend(points[inside])
                 iter_count += 1
 
@@ -144,6 +150,7 @@ class MPMSolver:
                 else:
                     samples.append(obj.position)
 
+            print(f"Final particle count for object {i}: {len(samples)}")
             all_p_x.append(np.array(samples))
             all_p_material.append(np.full(obj.num_particles, i, dtype=np.int32))
 
@@ -437,6 +444,20 @@ class MPMSolver:
                     self.p_v[p] += (self.dt / p_mass) * penalty_force
                     self.rigid.apply_impulse(r, self.p_x[p], -penalty_force * self.dt)
 
+    def export(self, frame, output_dir: str):
+        self.rigid.export(frame, output_dir)
+        num_p = self.n_particles[None]
+        pos_np = self.p_x.to_numpy()[:num_p]
+
+        vertex = np.array(
+            [(p[0], p[1], p[2]) for p in pos_np],
+            dtype=[("x", "f4"), ("y", "f4"), ("z", "f4")],
+        )
+
+        ply_el = PlyElement.describe(vertex, "vertex")
+        filename = os.path.join(output_dir, f"frame_{frame:04d}_mpm.ply")
+        PlyData([ply_el], text=False).write(filename)
+
     def mpm_step(self):
         self.reset_grid()
         self.build_rigid_cdf()
@@ -446,7 +467,8 @@ class MPMSolver:
         self.update_grid()
         self.g2p()
 
-    def step(self, time: float):
+    def step(self, time):
+        print("MPM step at time:", time)
         self.mpm_step()
         self.rigid.step(time)
         # self.cloth.step()
