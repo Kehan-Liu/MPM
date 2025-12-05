@@ -7,18 +7,13 @@
 pip install -r requirements.txt
 ```
 
-### How to Get Started
+## Getting Started
+Inside `demos/` folder, you can find several demo scripts showcasing different features of the simulator. You can run them directly after setting up the environment, or create your own demo. For example:
 ```powershell
-python test_rigid.py
+python .\demos\test_bunny.py
 ```
-Use this for testing collision of two balls.
 
-```powershell
-python test_bunny.py
-```
-Use this for testing collision of a ball and a bunny.
-
-## 渲染(Render)
+<!-- ## 渲染(Render)
 Ensure your blender path is at (if not, replace it with correct path)
 ```
 C:\\Program Files\\Blender Foundation\\Blender 5.0\\blender.exe
@@ -34,16 +29,16 @@ Parameters explanation:
 - `--resolution` : 分辨率
 - `--use_gpu`, `--gpu_only` : 使用GPU渲染
 - `--ground` : 添加地面阴影
-- `--body_colors` : 给不同刚体上色
+- `--body_colors` : 给不同刚体上色 -->
+
+## Rendering Simulation Output
+You can change the background HDRI image by replacing the file at `assets\background.exr` and add material textures in `assets\assets.blend` with blender. Specify the settings in the `render/render_frame.py` script, then run the following command to render simulation outputs:
+```bash
+python render/render_demo.py demo_name --start start_frame --end end_frame
+```
+You can find the result in `render_output/demo_name/`.
+
 ## PNG to MP4
 ```powershell
 python .\render\frames_to_mp4.py --input results\render_ti_frames --out results\ti_demo.mp4 --fps 60
 ```
-
-# Bug to Fix
-- None
-
-
-
-
-
