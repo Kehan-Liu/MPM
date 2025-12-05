@@ -38,6 +38,7 @@ def parse_args(argv):
     args = {
         "sim": None,
         "mesh_sequence": None,        # directory containing frame_XXXX_bodyN.obj files
+        "pose_dir": None,             # directory containing frame_XXXX_rigid.json files
         "output": os.path.join("render", "output", "frames"),
         # alternative source: per-frame mesh files (exported by rigid sim)
         "rigid_frames_dir": None,      # directory containing frame_XXXX_bodyN.obj
@@ -78,6 +79,9 @@ def parse_args(argv):
             i += 2
         elif k == "--mesh_sequence" and i + 1 < len(argv):
             args["mesh_sequence"] = argv[i + 1]
+            i += 2
+        elif k == "--pose_dir" and i + 1 < len(argv):
+            args["pose_dir"] = argv[i + 1]
             i += 2
         elif k == "--output" and i + 1 < len(argv):
             args["output"] = argv[i + 1]
@@ -672,14 +676,39 @@ def _orient_camera_to_gravity(cam, gravity_str, target=(0.0, 0.5, 0.0)):
 
 
 def setup_camera_and_light(args=None):
-    bpy.ops.object.camera_add(location=(0.0, 3.0, 6.0))
+    # Match Taichi preview camera for a [0,1]^3 simulation box
+    # Taichi preview: position(0.5, 2.0, 0.5), lookat(0.5, 0.5, 0.5), up=(0,0,1)
+    # move camera a bit further back/up so objects appear smaller in frame
+    bpy.ops.object.camera_add(location=(0.5, 3.5, 0.9))
     cam = bpy.context.active_object
-    look_at(cam, (0.0, 0.5, 0.0))
-    # If gravity provided, orient camera so screen down == gravity
+    target = (0.5, 0.5, 0.5)
+    # Prefer mathutils-based orientation (robust); fallback to simple look_at
+    try:
+        from mathutils import Vector
+        tgt = Vector(target)
+        forward = (tgt - cam.location)
+        if forward.length > 1e-9:
+            # Point camera so its -Z local axis looks at the target
+            rot_quat = forward.to_track_quat('-Z', 'Y')
+            cam.rotation_mode = 'QUATERNION'
+            cam.rotation_quaternion = rot_quat
+        else:
+            look_at(cam, target)
+    except Exception:
+        look_at(cam, target)
+    # ensure camera uses Z-up and reasonable clipping for small scene
+    try:
+        cam.data.clip_start = 0.001
+        cam.data.clip_end = 50.0
+        # modest focal length for similar framing to Taichi preview
+        cam.data.lens = 35.0
+    except Exception:
+        pass
+    # If gravity provided, orient camera so screen down == gravity (preserve above orientation if possible)
     try:
         grav = args.get('gravity') if args else None
         if grav:
-            _orient_camera_to_gravity(cam, grav, target=(0.0, 0.5, 0.0))
+            _orient_camera_to_gravity(cam, grav, target=(0.5, 0.5, 0.5))
     except Exception as e:
         print(f'[CAM] orientation to gravity failed: {e}')
     # Ensure the scene uses this camera for rendering
@@ -737,6 +766,11 @@ def main():
     # Mesh sequence mode ---------------------------------
     if args.get("mesh_sequence"):
         render_mesh_sequence(args)
+        return
+
+    # Pose-dir mode (static meshes + per-frame rigid poses) ----
+    if args.get("pose_dir") and args.get("import_meshes"):
+        render_pose_dir(args)
         return
 
     # JSON keyframe mode ---------------------------------
@@ -909,6 +943,149 @@ def render_mesh_sequence(args):
         log(f"SEQ: rendering -> {scene.render.filepath}")
         bpy.ops.render.render(write_still=True)
         log(f"SEQ: rendered frame {frame_idx} -> {scene.render.filepath}")
+
+
+def _list_pose_frame_files(pose_dir):
+    files = []
+    try:
+        for fn in os.listdir(pose_dir):
+            if fn.lower().endswith('.json') and fn.startswith('frame_'):
+                files.append(fn)
+    except Exception as e:
+        print('[POSE] list error:', e)
+        return []
+    frame_map = {}
+    for fn in files:
+        base = os.path.splitext(fn)[0]
+        parts = base.split('_')
+        # expect like frame_0001_rigid
+        if len(parts) < 2:
+            continue
+        try:
+            frame_idx = int(parts[1])
+        except Exception:
+            continue
+        frame_map[frame_idx] = os.path.join(pose_dir, fn)
+    return dict(sorted(frame_map.items()))
+
+
+def _apply_pose_to_objects(objects, pose):
+    # pose: can be dict or list
+    # dict case: has keys like 'bodies' or 'boxes'
+    # list case: it's already a list of body dicts
+    if isinstance(pose, list):
+        bodies = pose
+    elif isinstance(pose, dict):
+        bodies = pose.get('bodies') or pose.get('boxes') or []
+    else:
+        bodies = []
+    for bi, body in enumerate(bodies):
+        if bi >= len(objects):
+            break
+        obj = objects[bi]
+        # some exports may nest under keys like 'rigid' or have direct fields
+        if isinstance(body, dict) and 'rigid' in body and isinstance(body['rigid'], dict):
+            bd = body['rigid']
+        else:
+            bd = body if isinstance(body, dict) else {}
+        pos = bd.get('pos') or bd.get('position')
+        rot = bd.get('rot') or bd.get('rotation')
+        scale = bd.get('scale')
+        if pos is not None:
+            try:
+                obj.location = tuple(pos)
+            except Exception:
+                pass
+        if rot is not None:
+            # Support Euler (3) or Quaternion (4)
+            try:
+                if isinstance(rot, (list, tuple)) and len(rot) == 3:
+                    obj.rotation_mode = 'XYZ'
+                    obj.rotation_euler = (rot[0], rot[1], rot[2])
+                elif isinstance(rot, (list, tuple)) and len(rot) == 4:
+                    obj.rotation_mode = 'QUATERNION'
+                    obj.rotation_quaternion = (rot[0], rot[1], rot[2], rot[3])
+            except Exception:
+                pass
+        if scale is not None:
+            try:
+                if isinstance(scale, (list, tuple)) and len(scale) == 3:
+                    obj.scale = (scale[0], scale[1], scale[2])
+            except Exception:
+                pass
+
+
+def render_pose_dir(args):
+    pose_dir = args['pose_dir']
+    import_dir = args['import_meshes']
+    if not os.path.isdir(pose_dir):
+        raise FileNotFoundError(f"Pose directory not found: {pose_dir}")
+    if not os.path.isdir(import_dir):
+        raise FileNotFoundError(f"Mesh import directory not found: {import_dir}")
+
+    clear_scene()
+    setup_camera_and_light(args)
+    configure_engine(args)
+    setup_world(args)
+    setup_lights(args)
+    add_ground(args)
+
+    # Import all meshes from directory as ordered objects
+    mesh_paths = _split_paths_list(import_dir)
+    imported = []
+    for p in mesh_paths:
+        try:
+            parent = _import_one_mesh(p)
+            if parent:
+                imported.append(parent)
+        except Exception as e:
+            print('[POSE] import failed:', e)
+    if not imported:
+        # Fallback: create cubes
+        imported = create_cubes([(0.8,0.8,0.8), (0.6,0.6,0.6)])
+
+    # Colors per body if provided
+    static_colors = _parse_body_colors(args.get('body_colors')) if args.get('body_colors') else {}
+    try:
+        for bi, obj in enumerate(imported):
+            col = static_colors.get(bi)
+            if col is not None:
+                mat = make_material(f"PoseBody{bi}_Mat", col)
+                assign_material_recursive(obj, mat)
+    except Exception:
+        pass
+
+    scene = bpy.context.scene
+    if args.get('fps'):
+        try:
+            scene.render.fps = int(args['fps'])
+        except Exception:
+            pass
+    scene.render.image_settings.file_format = 'PNG'
+    os.makedirs(args['output'], exist_ok=True)
+
+    frame_files = _list_pose_frame_files(pose_dir)
+    if not frame_files:
+        print('[POSE] no frame_XXXX_rigid.json found')
+        return
+    frame_indices = sorted(frame_files.keys())
+    start = args.get('frame_start') or frame_indices[0]
+    end = args.get('frame_end') or frame_indices[-1]
+    for frame_idx in frame_indices:
+        if frame_idx < start or frame_idx > end:
+            continue
+        path = frame_files[frame_idx]
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                pose = json.load(f)
+        except Exception as e:
+            print(f"[POSE] failed reading {path}:", e)
+            continue
+        _apply_pose_to_objects(imported, pose)
+        scene.frame_set(frame_idx)
+        scene.render.filepath = os.path.join(args['output'], f'frame_{frame_idx:04d}.png')
+        bpy.ops.render.render(write_still=True)
+
 
 
 if __name__ == "__main__":

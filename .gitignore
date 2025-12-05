@@ -5,7 +5,8 @@ outputs/
 *.png
 demo/
 taichi_mpm/
-*.obj
+# *.obj
 *.log
 results/
 rigid_meshes/
+render/output/

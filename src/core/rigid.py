@@ -5,6 +5,7 @@ from typing import List, Tuple
 from src.core.rigid_body import RigidBody
 import json
 import os
+from tqdm import tqdm
 
 MAX_VERTICES = 100000
 MAX_FACES = 200000
@@ -31,7 +32,100 @@ def rigid_rigid_penalty(
             F = (-stiffness * phi - damping * vn) * n
             A.apply_impulse_at_point(F * dt, cp)
             B.apply_impulse_at_point(-F * dt, cp)
-
+@ti.kernel
+def mesh_box_penalty(
+    rb: ti.template(),
+    xmin: ti.f32,
+    ymin: ti.f32,
+    zmin: ti.f32,
+    xmax: ti.f32,
+    ymax: ti.f32,
+    zmax: ti.f32,
+    stiffness: ti.f32,
+    damping: ti.f32,
+    margin: ti.f32,
+    mu_t: ti.f32,
+    c_t: ti.f32,
+    max_fn: ti.f32,
+    dt: ti.f32,
+):
+    for i in range(rb.faces.shape[0]):
+        for k in ti.static(range(3)):
+            vidx = rb.faces[i][k]
+            x = rb.position[None] + rb.rotation_matrix[None] @ rb.vertices[vidx]
+            best_m = ti.float32(0.0)
+            best_phi = ti.float32(0.0)
+            best_n = ti.Vector([0.0, 0.0, 0.0])
+            # x >= xmin plane (n=+X, h=xmin)
+            phi = x[0] - xmin
+            if phi < -margin:
+                m = -phi
+                if m > best_m:
+                    best_m = m
+                    best_phi = phi
+                    best_n = ti.Vector([1.0, 0.0, 0.0])
+            # x <= xmax plane (n=-X, h=-xmax)
+            phi = (-x[0]) - (-xmax)  # = xmax - x0
+            if phi < -margin:
+                m = -phi
+                if m > best_m:
+                    best_m = m
+                    best_phi = phi
+                    best_n = ti.Vector([-1.0, 0.0, 0.0])
+            # y >= ymin plane (n=+Y, h=ymin)
+            phi = x[1] - ymin
+            if phi < -margin:
+                m = -phi
+                if m > best_m:
+                    best_m = m
+                    best_phi = phi
+                    best_n = ti.Vector([0.0, 1.0, 0.0])
+            # y <= ymax plane (n=-Y, h=-ymax)
+            phi = (-x[1]) - (-ymax)  # = ymax - y
+            if phi < -margin:
+                m = -phi
+                if m > best_m:
+                    best_m = m
+                    best_phi = phi
+                    best_n = ti.Vector([0.0, -1.0, 0.0])
+            # z >= zmin plane (n=+Z, h=zmin)
+            phi = x[2] - zmin
+            if phi < -margin:
+                m = -phi
+                if m > best_m:
+                    best_m = m
+                    best_phi = phi
+                    best_n = ti.Vector([0.0, 0.0, 1.0])
+            # z <= zmax plane (n=-Z, h=-zmax)
+            phi = (-x[2]) - (-zmax)  # = zmax - z
+            if phi < -margin:
+                m = -phi
+                if m > best_m:
+                    best_m = m
+                    best_phi = phi
+                    best_n = ti.Vector([0.0, 0.0, -1.0])
+            if best_m > 0.0:
+                cp = x - best_phi * best_n
+                v = rb.get_velocity_at_point(cp)
+                vn = v.dot(best_n)
+                vt = v - vn * best_n
+                f_n = -stiffness * best_phi - damping * vn
+                if f_n > max_fn:
+                    f_n = max_fn
+                if f_n < -max_fn:
+                    f_n = -max_fn
+                f_t = ti.Vector([0.0, 0.0, 0.0])
+                vt_norm = vt.norm()
+                if vt_norm > 1e-8:
+                    f_visc = -c_t * vt
+                    limit = mu_t * ti.abs(f_n)
+                    f_visc_norm = f_visc.norm()
+                    if f_visc_norm > limit:
+                        f_t = -limit * (vt / vt_norm)
+                    else:
+                        f_t = f_visc
+                F = f_n * best_n + f_t
+                rb.apply_impulse_at_point(F * dt, cp)
 
 @ti.kernel
 def mesh_plane_penalty(
@@ -81,7 +175,6 @@ def mesh_plane_penalty(
                 F = f_n * n + f_t
                 rb.apply_impulse_at_point(F * dt, cp)
 
-
 @ti.data_oriented
 class Rigid:
     def __init__(
@@ -90,6 +183,9 @@ class Rigid:
         dx: float,
         dt: float,
         gravity: Tuple[float, float, float] = (0.0, -9.81, 0.0),
+        damping: int = 1e4,
+        margin: float = 1e-3,
+        stiffness: float = 5e4,
     ):
         self.n_rigid = len(rigid_objects)
         self.rigid_conf = rigid_objects
@@ -124,7 +220,9 @@ class Rigid:
         self.bp2rb = ti.field(dtype=ti.i32, shape=MAX_BP)
         self.bp2f = ti.field(dtype=ti.i32, shape=MAX_BP)
         self.n_boundary_particles = ti.field(dtype=ti.i32, shape=())
-
+        self.damping = damping
+        self.margin = margin
+        self.stiffness = stiffness
         self.init_rigid_states()
         self.load_mesh_data()
 
@@ -192,7 +290,14 @@ class Rigid:
                             bp_count += 1
                         y_length += self.dx
                     x_length += self.dx
-                print(f"bp_count: {bp_count}")
+                # use tqdm to show progress of boundary particle generation
+                if 'bp_tqdm' not in globals():
+                    try:
+                        globals()['bp_tqdm'] = tqdm(desc="Boundary particles", unit="bp", leave=True)
+                    except Exception:
+                        globals()['bp_tqdm'] = None
+                if globals().get('bp_tqdm') is not None:
+                    globals()['bp_tqdm'].update(1)
 
             vertex_count += n_verts
             face_count += n_faces
@@ -238,23 +343,67 @@ class Rigid:
 
     def resolve_collisions(self):
         # Pairwise rigid-rigid collision
-        stiffness = 5e4
-        damping = 1e4
-        margin = 1e-3
+        stiffness = self.stiffness 
+        damping = self.damping
+        margin = self.margin
         
         for i in range(self.n_rigid):
             for j in range(i + 1, self.n_rigid):
+                A = self.rigid_objects[i]
+                B = self.rigid_objects[j]
+                # If both are Balls, prefer analytic detection + impulse, log collision
+                is_ball_i = isinstance(self.rigid_conf[i].meshdir, str) and self.rigid_conf[i].meshdir.lower() == "ball"
+                is_ball_j = isinstance(self.rigid_conf[j].meshdir, str) and self.rigid_conf[j].meshdir.lower() == "ball"
+                if is_ball_i and is_ball_j:
+                    pi = A.position[None].to_numpy()
+                    pj = B.position[None].to_numpy()
+                    # estimate radius from centered mesh verts
+                    try:
+                        ri = float(np.max(np.linalg.norm(A.mesh.vertices - A.mass_center_offset[None].to_numpy(), axis=1)))
+                        rj = float(np.max(np.linalg.norm(B.mesh.vertices - B.mass_center_offset[None].to_numpy(), axis=1)))
+                    except Exception:
+                        ri, rj = 0.1, 0.1
+                    dist = float(np.linalg.norm(pi - pj))
+                    collided = dist <= (ri + rj)
+                    # print(f"[debug] Ball pair ({i},{j}) collided={collided} dist={dist:.4f} thr={(ri+rj):.4f}")
+                    if collided:
+                        n = (pi - pj)
+                        n_norm = float(np.linalg.norm(n))
+                        if n_norm > 1e-8:
+                            n = n / n_norm
+                            vA = A.velocity[None].to_numpy()
+                            vB = B.velocity[None].to_numpy()
+                            vn = float(np.dot(vA - vB, n))
+                            if vn < 0.0:
+                                # Taichi scalar fields: use [None] to read value
+                                try:
+                                    mA = float(A.mass[None])
+                                except Exception:
+                                    mA = float(A.mass) if not hasattr(A.mass, '__getitem__') else float(A.mass[None])
+                                try:
+                                    mB = float(B.mass[None])
+                                except Exception:
+                                    mB = float(B.mass) if not hasattr(B.mass, '__getitem__') else float(B.mass[None])
+                                e_pair = float(max(self.restitution[i], self.restitution[j])) if hasattr(self, 'restitution') else 0.0
+                                J = -(1.0 + e_pair) * vn / (1.0/mA + 1.0/mB)
+                                vA_new = vA + (J * n) / mA
+                                vB_new = vB - (J * n) / mB
+                                A.velocity[None] = vA_new.astype(np.float32)
+                                B.velocity[None] = vB_new.astype(np.float32)
+                    # Skip mesh-based penalty for ball-ball to avoid double correction
+                    continue
+                # Generic meshes
                 rigid_rigid_penalty(
-                    self.rigid_objects[i],
-                    self.rigid_objects[j],
+                    A,
+                    B,
                     stiffness,
                     damping,
                     margin,
                     self.dt,
                 )
                 rigid_rigid_penalty(
-                    self.rigid_objects[j],
-                    self.rigid_objects[i],
+                    B,
+                    A,
                     stiffness,
                     damping,
                     margin,
@@ -267,88 +416,10 @@ class Rigid:
         max_force = 1e4
 
         for i in range(self.n_rigid):
-            # y > 0
-            mesh_plane_penalty(
+            mesh_box_penalty(
                 self.rigid_objects[i],
-                0.0,
-                1.0,
-                0.0,
-                0.0,
-                stiffness,
-                damping,
-                margin,
-                mu_t,
-                c_t,
-                max_force,
-                self.dt,
-            )
-            # y < 1
-            mesh_plane_penalty(
-                self.rigid_objects[i],
-                0.0,
-                -1.0,
-                0.0,
-                -1.0,
-                stiffness,
-                damping,
-                margin,
-                mu_t,
-                c_t,
-                max_force,
-                self.dt,
-            )
-            # x > 0
-            mesh_plane_penalty(
-                self.rigid_objects[i],
-                1.0,
-                0.0,
-                0.0,
-                0.0,
-                stiffness,
-                damping,
-                margin,
-                mu_t,
-                c_t,
-                max_force,
-                self.dt,
-            )
-            # x < 1
-            mesh_plane_penalty(
-                self.rigid_objects[i],
-                -1.0,
-                0.0,
-                0.0,
-                -1.0,
-                stiffness,
-                damping,
-                margin,
-                mu_t,
-                c_t,
-                max_force,
-                self.dt,
-            )
-            # z > 0
-            mesh_plane_penalty(
-                self.rigid_objects[i],
-                0.0,
-                0.0,
-                1.0,
-                0.0,
-                stiffness,
-                damping,
-                margin,
-                mu_t,
-                c_t,
-                max_force,
-                self.dt,
-            )
-            # z < 1
-            mesh_plane_penalty(
-                self.rigid_objects[i],
-                0.0,
-                0.0,
-                -1.0,
-                -1.0,
+                0.0, 0.0, 0.0,
+                1.0, 1.0, 1.0,
                 stiffness,
                 damping,
                 margin,
