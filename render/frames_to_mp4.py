@@ -8,7 +8,9 @@ import sys
 import cv2
 
 
-def build_video(input_dir: str, out_path: str, source_fps: int, target_fps: int = 60) -> None:
+def build_video(
+    input_dir: str, out_path: str, source_fps: int, target_fps: int = 60
+) -> None:
     pattern = os.path.join(input_dir, "frame_*.png")
     files = sorted(glob.glob(pattern))
     if not files:
@@ -21,10 +23,19 @@ def build_video(input_dir: str, out_path: str, source_fps: int, target_fps: int 
 
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
 
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    # Try H.264 (avc1) first as it is compatible with VS Code / Web browsers
+    fourcc = cv2.VideoWriter_fourcc(*"avc1")
     writer = cv2.VideoWriter(out_path, fourcc, target_fps, (w, h))
+
     if not writer.isOpened():
-        raise RuntimeError("Failed to open video writer. Try a different fourcc or check OpenCV build.")
+        print("Warning: 'avc1' codec not found. Falling back to 'mp4v'.")
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        writer = cv2.VideoWriter(out_path, fourcc, target_fps, (w, h))
+
+    if not writer.isOpened():
+        raise RuntimeError(
+            "Failed to open video writer. Try a different fourcc or check OpenCV build."
+        )
     # Resample frames in time so duration = (num_source_frames / source_fps)
     # and output is written at `target_fps`. We map each output frame index j
     # to a source frame index src_idx = floor(j * N / M).
@@ -60,15 +71,31 @@ def build_video(input_dir: str, out_path: str, source_fps: int, target_fps: int 
             print(f"Written {j+1}/{M} output frames (source frames: {N})...")
 
     writer.release()
-    print(f"Video saved to {out_path} (duration {duration:.3f}s, target_fps={target_fps}, output_frames={M})")
+    print(
+        f"Video saved to {out_path} (duration {duration:.3f}s, target_fps={target_fps}, output_frames={M})"
+    )
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Assemble PNG frames into MP4 using OpenCV")
-    ap.add_argument("--input", required=True, help="Directory containing frame_XXXX.png")
+    ap = argparse.ArgumentParser(
+        description="Assemble PNG frames into MP4 using OpenCV"
+    )
+    ap.add_argument(
+        "--input", required=True, help="Directory containing frame_XXXX.png"
+    )
     ap.add_argument("--out", required=True, help="Output MP4 path")
-    ap.add_argument("--fps", type=int, default=60, help="Source frames per second (original capture fps)")
-    ap.add_argument("--target-fps", type=int, default=60, help="Output video fps (playback rate), default 60")
+    ap.add_argument(
+        "--fps",
+        type=int,
+        default=60,
+        help="Source frames per second (original capture fps)",
+    )
+    ap.add_argument(
+        "--target-fps",
+        type=int,
+        default=60,
+        help="Output video fps (playback rate), default 60",
+    )
     args = ap.parse_args()
 
     build_video(args.input, args.out, args.fps, args.target_fps)

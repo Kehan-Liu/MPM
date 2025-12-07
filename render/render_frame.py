@@ -6,13 +6,13 @@ import mathutils
 
 # --- Configuration ---
 ASSETS_PATH = "assets.blend"  # Path to your pre-made file
-MPM_MATERIAL_NAME = "Water"  # Must match a material name in assets.blend
+MPM_MATERIAL_NAME = "Jelly"  # Must match a material name in assets.blend
 RB_MATERIAL_NAME = "RigidMat"  # Must match a material name in assets.blend
 
 # Meshing Settings
-PARTICLE_RADIUS = 1e-2
-VOXEL_SIZE = 1.0 / 64.0
-THRESHOLD = 1.0
+PARTICLE_RADIUS = 0.008
+VOXEL_SIZE = 1.0 / 250.0
+THRESHOLD = 0.5
 
 # Scene Settings
 CAMERA_POS = (-2.0, -2.0, 1.5)
@@ -145,10 +145,12 @@ def load_mpm_particles(ply_path):
     # Apply Meshing (Geometry Nodes)
     setup_geometry_nodes(obj)
 
-    # Add Smooth Modifier to reduce bumps
-    smooth = obj.modifiers.new(name="Smooth", type="SMOOTH")
-    smooth.factor = 1.0
-    smooth.iterations = 50
+    # Add Laplacian Smooth Modifier (better for volume preservation)
+    smooth = obj.modifiers.new(name="Smooth", type="LAPLACIANSMOOTH")
+    smooth.lambda_factor = 0.5
+    smooth.iterations = 0
+    smooth.use_volume_preserve = True
+    smooth.use_normalized = True
 
 
 def cleanup_scene():
@@ -270,19 +272,34 @@ def render_frame(ply_file, json_file, output_file):
         cycles_prefs.refresh_devices()
 
         # Attempt to set a GPU device type
+        gpu_found = False
         for device_type in ["OPTIX", "CUDA", "HIP", "METAL"]:
-            try:
-                cycles_prefs.compute_device_type = device_type
+            cycles_prefs.compute_device_type = device_type
+
+            # Check if we have any devices of this type
+            devices_of_type = [d for d in cycles_prefs.devices if d.type == device_type]
+
+            if devices_of_type:
+                print(
+                    f"Found {device_type} devices: {[d.name for d in devices_of_type]}"
+                )
+
+                # Enable these devices
+                for device in cycles_prefs.devices:
+                    if device.type == device_type:
+                        device.use = True
+                    else:
+                        device.use = False  # Disable CPU and others
+
+                gpu_found = True
                 break
-            except:
-                pass
 
-        # Enable devices
-        for device in cycles_prefs.devices:
-            if device.type != "CPU":
-                device.use = True
+        if gpu_found:
+            bpy.context.scene.cycles.device = "GPU"
+        else:
+            print("No GPU devices found. Using CPU.")
+            bpy.context.scene.cycles.device = "CPU"
 
-        bpy.context.scene.cycles.device = "GPU"
     except Exception as e:
         print(f"GPU setup failed or not supported: {e}")
 

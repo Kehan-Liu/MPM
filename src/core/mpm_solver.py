@@ -125,27 +125,63 @@ class MPMSolver:
             # Apply translation
             mesh.apply_translation(obj.position)
 
-            # Rejection sampling
-            samples = []
+            # Stratified Sampling (Jittered Grid) - Approximates Poisson Disk
+            print(f"Sampling particles for object {i} using Stratified Sampling...")
             bounds = mesh.bounds
 
-            iter_count = 0
-            while len(samples) < obj.num_particles and iter_count < 100:
+            # Calculate grid spacing to approximate target number of particles
+            # Volume = N * spacing^3  => spacing = (Volume / N)^(1/3)
+            # We use slightly smaller spacing to ensure we have enough candidates
+            spacing = (vol / obj.num_particles) ** (1.0 / 3.0) * 0.83
+
+            # Create grid points
+            x_range = np.arange(bounds[0][0], bounds[1][0] + spacing, spacing)
+            y_range = np.arange(bounds[0][1], bounds[1][1] + spacing, spacing)
+            z_range = np.arange(bounds[0][2], bounds[1][2] + spacing, spacing)
+
+            gx, gy, gz = np.meshgrid(x_range, y_range, z_range, indexing="ij")
+            grid_points = np.stack([gx.flatten(), gy.flatten(), gz.flatten()], axis=1)
+
+            # Add jitter (random offset within cell)
+            # Use 0.4 * spacing to keep particles separated by at least 0.2 * spacing
+            jitter = np.random.uniform(-0.3 * spacing, 0.3 * spacing, grid_points.shape)
+            candidate_points = grid_points + jitter
+
+            # Check containment in batches
+            print(f"Checking containment for {len(candidate_points)} candidates...")
+            samples = []
+            batch_size = 10000
+            for k in range(0, len(candidate_points), batch_size):
+                batch = candidate_points[k : k + batch_size]
+                inside = mesh.contains(batch)
+                samples.extend(batch[inside])
                 print(
-                    f"Sampling particles for object {i}, iteration {iter_count}, collected {len(samples)} particles"
+                    f"Processed batch {k // batch_size + 1}, total collected: {len(samples)}"
                 )
-                needed = obj.num_particles - len(samples)
-                batch_size = min(max(needed * 2, 1000), 10000)
-                points = np.random.uniform(bounds[0], bounds[1], (batch_size, 3))
-                print("start checking containment")
-                inside = mesh.contains(points)
-                print("containment check done")
-                samples.extend(points[inside])
-                iter_count += 1
+
+            print(f"Collected {len(samples)} particles (target: {obj.num_particles})")
 
             # Handle count mismatch
             if len(samples) > obj.num_particles:
-                samples = samples[: obj.num_particles]
+                # Randomly select subset
+                indices = np.random.choice(
+                    len(samples), obj.num_particles, replace=False
+                )
+                samples = [samples[i] for i in indices]
+
+            # Fallback to random sampling if we don't have enough
+            iter_count = 0
+            while len(samples) < obj.num_particles and iter_count < 100:
+                needed = obj.num_particles - len(samples)
+                print(
+                    f"Need {needed} more particles, falling back to random sampling..."
+                )
+                batch_size = min(max(needed * 4, 1000), 10000)
+                points = np.random.uniform(bounds[0], bounds[1], (batch_size, 3))
+                inside = mesh.contains(points)
+                samples.extend(points[inside])
+                iter_count += 1
+
             while len(samples) < obj.num_particles:
                 if len(samples) > 0:
                     samples.append(samples[0])

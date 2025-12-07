@@ -24,7 +24,7 @@ Knife = RigidObject(
     position=(0.5, 0.5, 0.15),
     mass=10.0,
     velocity=(0.0, 0.0, 0.0),
-    material=RigidMaterial(kh=1e3, friction=0.0, splitter=0.1),
+    material=RigidMaterial(kh=1e3, friction=0.0, splitter=0.05),
     is_dynamic=False,
 )
 
@@ -62,7 +62,7 @@ video_manager = ti.tools.VideoManager(
 )
 
 current_time = 0.0
-for frame in range(100):
+for frame in range(300):
     for _ in range(50):
         solver.step(current_time)
         current_time += scene.dt
