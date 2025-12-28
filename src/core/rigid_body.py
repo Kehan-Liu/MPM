@@ -3,6 +3,60 @@ from src.objects import RigidObject
 
 import taichi as ti
 import numpy as np
+import os
+
+
+@ti.func
+def tri_normal(a, b, c):
+    n = (b - a).cross(c - a)
+    ln = n.norm()
+    res = ti.Vector([0.0, 1.0, 0.0])
+    if ln > 1e-8:
+        res = n / ln
+    return res
+
+
+@ti.func
+def closest_point_on_triangle(p, a, b, c):
+    ab = b - a
+    ac = c - a
+    ap = p - a
+    d1 = ab.dot(ap)
+    d2 = ac.dot(ap)
+    result = a
+    if not ((d1 <= 0) and (d2 <= 0)):
+        bp = p - b
+        d3 = ab.dot(bp)
+        d4 = ac.dot(bp)
+        if not ((d3 >= 0) and (d4 <= d3)):
+            vc = d1 * d4 - d3 * d2
+            if (vc <= 0) and (d1 >= 0) and (d3 <= 0):
+                v = d1 / (d1 - d3 + 1e-8)
+                result = a + v * ab
+            else:
+                cp = p - c
+                d5 = ab.dot(cp)
+                d6 = ac.dot(cp)
+                if not ((d6 >= 0) and (d5 <= d6)):
+                    vb = d5 * d2 - d1 * d6
+                    if (vb <= 0) and (d2 >= 0) and (d6 <= 0):
+                        w = d2 / (d2 - d6 + 1e-8)
+                        result = a + w * ac
+                    else:
+                        va = d3 * d6 - d5 * d4
+                        if (va <= 0) and ((d4 - d3) >= 0) and ((d5 - d6) >= 0):
+                            w = (d4 - d3) / ((d4 - d3) + (d5 - d6) + 1e-8)
+                            result = b + w * (c - b)
+                        else:
+                            denom = va + vb + vc + 1e-8
+                            v = vb / denom
+                            w = vc / denom
+                            result = a + ab * v + ac * w
+                else:
+                    result = c
+        else:
+            result = b
+    return result
 
 
 @ti.data_oriented
@@ -57,6 +111,12 @@ class RigidBody:
         self.vertices.from_numpy(mesh.vertices)
         self.faces.from_numpy(mesh.faces)
 
+        self.render_vertices = ti.Vector.field(
+            3, dtype=ti.f32, shape=len(mesh.vertices)
+        )
+        self.render_indices = ti.field(dtype=ti.i32, shape=len(mesh.faces) * 3)
+        self.render_indices.from_numpy(mesh.faces.flatten())
+
         self.mass[None] = rigid_object.mass
         self.centralize()  # centralize the mesh
         self.mesh = trimesh.Trimesh(
@@ -81,6 +141,13 @@ class RigidBody:
         self.num_contacts = ti.field(dtype=ti.i32, shape=())
 
         self.scripted_trajectory = rigid_object.scripted_trajectory
+
+    @ti.kernel
+    def update_render_vertices(self):
+        for i in self.vertices:
+            self.render_vertices[i] = (
+                self.position[None] + self.rotation_matrix[None] @ self.vertices[i]
+            )
 
     def quat_wxyz_to_matrix(self, qwxyz):
         qw, qx, qy, qz = (
@@ -123,7 +190,7 @@ class RigidBody:
             temp += center * area
 
         return temp / mesh_area
-    
+
     @ti.kernel
     def get_volume(self):
         vol = ti.float32(0.0)
@@ -189,57 +256,6 @@ class RigidBody:
         )
 
     @ti.func
-    def tri_normal(self, a, b, c):
-        n = (b - a).cross(c - a)
-        ln = n.norm()
-        res = ti.Vector([0.0, 1.0, 0.0])
-        if ln > 1e-8:
-            res = n / ln
-        return res
-
-    @ti.func
-    def closest_point_on_triangle(self, p, a, b, c):
-        ab = b - a
-        ac = c - a
-        ap = p - a
-        d1 = ab.dot(ap)
-        d2 = ac.dot(ap)
-        result = a
-        if not ((d1 <= 0) and (d2 <= 0)):
-            bp = p - b
-            d3 = ab.dot(bp)
-            d4 = ac.dot(bp)
-            if not ((d3 >= 0) and (d4 <= d3)):
-                vc = d1 * d4 - d3 * d2
-                if (vc <= 0) and (d1 >= 0) and (d3 <= 0):
-                    v = d1 / (d1 - d3 + 1e-8)
-                    result = a + v * ab
-                else:
-                    cp = p - c
-                    d5 = ab.dot(cp)
-                    d6 = ac.dot(cp)
-                    if not ((d6 >= 0) and (d5 <= d6)):
-                        vb = d5 * d2 - d1 * d6
-                        if (vb <= 0) and (d2 >= 0) and (d6 <= 0):
-                            w = d2 / (d2 - d6 + 1e-8)
-                            result = a + w * ac
-                        else:
-                            va = d3 * d6 - d5 * d4
-                            if (va <= 0) and ((d4 - d3) >= 0) and ((d5 - d6) >= 0):
-                                w = (d4 - d3) / ((d4 - d3) + (d5 - d6) + 1e-8)
-                                result = b + w * (c - b)
-                            else:
-                                denom = va + vb + vc + 1e-8
-                                v = vb / denom
-                                w = vc / denom
-                                result = a + ab * v + ac * w
-                    else:
-                        result = c
-            else:
-                result = b
-        return result
-
-    @ti.func
     def signed_distance(self, p):
         min_abs = 1e30
         best_phi = 0.0
@@ -250,13 +266,13 @@ class RigidBody:
             a = center + self.rotation_matrix[None] @ self.vertices[idx[0]]
             b = center + self.rotation_matrix[None] @ self.vertices[idx[1]]
             c = center + self.rotation_matrix[None] @ self.vertices[idx[2]]
-            cp = self.closest_point_on_triangle(p, a, b, c)
-            n = self.tri_normal(a, b, c)
+            cp = closest_point_on_triangle(p, a, b, c)
+            n = tri_normal(a, b, c)
             phi = (p - cp).dot(n)
             # flip to make n point outward from rb
-            if (center - cp).dot(n) > 0:
-                phi = -phi
-                n = -n
+            # if (center - cp).dot(n) > 0:
+            #     phi = -phi
+            #     n = -n
             ap = ti.abs(phi)
             if ap < min_abs:
                 min_abs = ap
@@ -389,7 +405,12 @@ class RigidBody:
             self.update(dt, max_speed=100.0, max_omega=50.0)
         self.rotation_matrix[None] = self.quat_wxyz_to_matrix(self.orientation[None])
 
-    def export_centered_mesh(self, filepath):
-        """Export the rigid body's mesh, centered at the mass center."""
-        mesh = self.mesh.copy()
-        mesh.export(filepath)
+    def export(self, frame: int, output_dir: str, rb_id: int):
+        filename = os.path.join(
+            output_dir, f"rigid_body_{rb_id:04d}_frame_{frame:04d}.obj"
+        )
+        self.update_render_vertices()
+        vertices_np = self.render_vertices.to_numpy()
+        faces_np = self.render_indices.to_numpy().reshape(-1, 3)
+        mesh = trimesh.Trimesh(vertices=vertices_np, faces=faces_np)
+        mesh.export(filename)

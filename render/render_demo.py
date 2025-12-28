@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import glob
+import concurrent.futures
 
 # Add the current directory to sys.path to allow importing frames_to_mp4
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -15,7 +16,72 @@ except ImportError:
     build_video = None
 
 
-def render_demo(demo_name, start_frame=0, end_frame=None, skip_existing=False):
+def process_frame(args):
+    (
+        frame_num,
+        frame_str,
+        ply_file,
+        results_dir,
+        output_dir,
+        skip_existing,
+        workspace_root,
+    ) = args
+
+    # Construct paths
+    rigid_dir = os.path.join(results_dir, "rigid")
+    output_png = os.path.join(output_dir, f"frame_{frame_str}.png")
+    obj_file = os.path.join(results_dir, "particles", f"frame_{frame_str}_mpm.obj")
+
+    if skip_existing and os.path.exists(output_png):
+        print(f"Skipping existing frame {frame_num}")
+        return True
+
+    # Reconstruct
+    if not os.path.exists(obj_file):
+        print(f"Reconstructing frame {frame_num}...")
+        reconstruct_cmd = [
+            sys.executable,
+            os.path.join(workspace_root, "render", "reconstruct_mesh.py"),
+            ply_file,
+            obj_file,
+        ]
+        try:
+            subprocess.run(reconstruct_cmd, check=True)
+        except subprocess.CalledProcessError as e:
+            print(f"Error reconstructing frame {frame_num}: {e}")
+            return False
+
+    print(f"Rendering frame {frame_num}...")
+
+    # Command
+    cmd = [
+        "blender",
+        os.path.join(workspace_root, "assets", "assets.blend"),
+        "-b",
+        "-P",
+        os.path.join(workspace_root, "render", "render_frame.py"),
+        "--",
+        obj_file,
+        rigid_dir,
+        frame_str,
+        output_png,
+    ]
+
+    try:
+        subprocess.run(
+            cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+        )
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"Error rendering frame {frame_num}:")
+        if e.stderr:
+            print(e.stderr.decode())
+        return False
+
+
+def render_demo(
+    demo_name, start_frame=0, end_frame=None, skip_existing=False, num_threads=4
+):
     # Paths
     workspace_root = os.getcwd()  # Assuming run from root as per user example
     results_dir = os.path.join(workspace_root, "results", demo_name)
@@ -24,25 +90,22 @@ def render_demo(demo_name, start_frame=0, end_frame=None, skip_existing=False):
     os.makedirs(output_dir, exist_ok=True)
 
     # Find all mpm ply files
-    ply_pattern = os.path.join(results_dir, "frame_*_mpm.ply")
+    ply_pattern = os.path.join(results_dir, "particles/frame_*.ply")
     ply_files = sorted(glob.glob(ply_pattern))
 
     if not ply_files:
         print(f"No ply files found in {results_dir}")
         return
 
-    print(f"Found {len(ply_files)} frames to render for demo '{demo_name}'")
-
-    rendered_count = 0
-
+    tasks = []
     for ply_file in ply_files:
         filename = os.path.basename(ply_file)
-        # filename is frame_XXXX_mpm.ply
+        # filename is frame_XXXX.ply
         # extract frame number
         try:
             parts = filename.split("_")
-            # parts: ['frame', '0200', 'mpm.ply']
-            frame_str = parts[1]
+            # parts: ['frame', '0200.ply']
+            frame_str = parts[1].split(".")[0]
             frame_num = int(frame_str)
         except (IndexError, ValueError):
             print(f"Skipping malformed filename: {filename}")
@@ -53,49 +116,26 @@ def render_demo(demo_name, start_frame=0, end_frame=None, skip_existing=False):
         if end_frame is not None and frame_num > end_frame:
             continue
 
-        # Construct paths
-        json_file = os.path.join(results_dir, f"frame_{frame_str}_rigid.json")
-        output_png = os.path.join(output_dir, f"frame_{frame_str}.png")
-
-        if not os.path.exists(json_file):
-            print(f"Warning: Missing rigid json for frame {frame_num}: {json_file}")
-
-        if skip_existing and os.path.exists(output_png):
-            print(f"Skipping existing frame {frame_num}")
-            rendered_count += 1
-            continue
-
-        print(f"Rendering frame {frame_num}...")
-
-        # Command
-        # blender ./assets/assets.blend -b -P render/render_frame.py -- <ply> <json> <out>
-        cmd = [
-            "blender",
-            os.path.join("assets", "assets.blend"),
-            "-b",
-            "-P",
-            os.path.join("render", "render_frame.py"),
-            "--",
-            ply_file,
-            json_file,
-            output_png,
-        ]
-
-        try:
-            # Suppress stdout/stderr to keep it clean, or let it show?
-            # Blender output is verbose. Maybe redirect to DEVNULL unless error?
-            # But user might want to see progress.
-            # Let's keep it visible but maybe we can just print a progress bar?
-            # For now, let's just run it.
-            subprocess.run(
-                cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+        tasks.append(
+            (
+                frame_num,
+                frame_str,
+                ply_file,
+                results_dir,
+                output_dir,
+                skip_existing,
+                workspace_root,
             )
-            rendered_count += 1
-        except subprocess.CalledProcessError as e:
-            print(f"Error rendering frame {frame_num}:")
-            if e.stderr:
-                print(e.stderr.decode())
-            # Decide whether to stop or continue. Usually continue.
+        )
+
+    print(
+        f"Found {len(tasks)} frames to render for demo '{demo_name}' using {num_threads} threads"
+    )
+
+    rendered_count = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=num_threads) as executor:
+        results = list(executor.map(process_frame, tasks))
+        rendered_count = sum(results)
 
     print(f"Finished rendering {rendered_count} frames.")
 
@@ -124,7 +164,10 @@ if __name__ == "__main__":
     parser.add_argument("--start", type=int, default=0, help="Start frame number")
     parser.add_argument("--end", type=int, default=None, help="End frame number")
     parser.add_argument("--skip", action="store_true", help="Skip existing frames")
+    parser.add_argument(
+        "--threads", type=int, default=4, help="Number of threads to use"
+    )
 
     args = parser.parse_args()
 
-    render_demo(args.demo_name, args.start, args.end, args.skip)
+    render_demo(args.demo_name, args.start, args.end, args.skip, args.threads)

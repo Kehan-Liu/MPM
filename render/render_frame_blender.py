@@ -1,31 +1,95 @@
 import bpy
-import json
 import sys
 import os
 import glob
 import mathutils
 
 # --- Configuration ---
-ASSETS_PATH = "assets.blend"  # Path to your pre-made file
+ASSETS_PATH = os.path.join("assets", "assets.blend")  # Path to your pre-made file
 MPM_MATERIAL_NAME = "Water"  # Must match a material name in assets.blend
 RB_MATERIAL_NAME = "RigidMat"  # Must match a material name in assets.blend
 
+# Meshing Settings
+PARTICLE_RADIUS = 0.02
+VOXEL_SIZE = 1.0 / 64
+THRESHOLD = 0.6
+
 # Scene Settings
-CAMERA_POS = (-2.0, -2.0, 1.2)
-CAMERA_LOOKAT = (0.5, 0.5, 0.3)
+CAMERA_POS = (3.0, 3.0, 1.5)
+CAMERA_LOOKAT = (0.5, 0.5, 0.5)
 LIGHT_POS = (5.0, 5.0, 10.0)
 LIGHT_ENERGY = 5.0
-HDRI_PATH = "assets/background.exr"  # Set to None or invalid path to skip
+HDRI_PATH = os.path.join(
+    "assets", "background.exr"
+)  # Set to None or invalid path to skip
 
 
-def load_rigid_bodies(rigid_dir, frame_str):
-    """Loads rigid body meshes for the given frame."""
+def setup_geometry_nodes(obj):
+    """Adds the Point-to-Mesh Geometry Nodes modifier."""
+    mod = obj.modifiers.new(name="FluidMesher", type="NODES")
+    group = bpy.data.node_groups.new("FluidMeshGroup", "GeometryNodeTree")
+    mod.node_group = group
+
+    # Setup Interface (Crucial for Blender 4.0+)
+    if hasattr(group, "interface"):
+        group.interface.new_socket(
+            name="Geometry", in_out="INPUT", socket_type="NodeSocketGeometry"
+        )
+        group.interface.new_socket(
+            name="Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry"
+        )
+    else:
+        # Fallback for older Blender versions
+        group.inputs.new("NodeSocketGeometry", "Geometry")
+        group.outputs.new("NodeSocketGeometry", "Geometry")
+
+    # Create Nodes
+    nodes = group.nodes
+    links = group.links
+
+    in_node = nodes.new("NodeGroupInput")
+    out_node = nodes.new("NodeGroupOutput")
+
+    pts_to_vol = nodes.new("GeometryNodePointsToVolume")
+    pts_to_vol.inputs["Radius"].default_value = PARTICLE_RADIUS
+    pts_to_vol.inputs["Voxel Size"].default_value = VOXEL_SIZE
+    pts_to_vol.inputs["Density"].default_value = 10.0
+
+    vol_to_mesh = nodes.new("GeometryNodeVolumeToMesh")
+    vol_to_mesh.inputs["Threshold"].default_value = THRESHOLD
+    vol_to_mesh.inputs["Adaptivity"].default_value = 0.1
+
+    smooth = nodes.new("GeometryNodeSetShadeSmooth")
+
+    # Material Assignment Node (Crucial for GeoNodes)
+    set_mat = nodes.new("GeometryNodeSetMaterial")
+    mat = bpy.data.materials.get(MPM_MATERIAL_NAME)
+    if mat:
+        set_mat.inputs["Material"].default_value = mat
+
+    # Link
+    links.new(in_node.outputs["Geometry"], pts_to_vol.inputs["Points"])
+    links.new(pts_to_vol.outputs["Volume"], vol_to_mesh.inputs["Volume"])
+    links.new(vol_to_mesh.outputs["Mesh"], set_mat.inputs["Geometry"])
+    links.new(set_mat.outputs["Geometry"], smooth.inputs["Geometry"])
+    links.new(smooth.outputs["Geometry"], out_node.inputs["Geometry"])
+
+
+def load_rigid_bodies(rigid_dir: str, frame_str: str):
+    """Loads rigid body meshes for the given frame (exported OBJs).
+
+    Expected filename pattern:
+      rigid_body_0000_frame_0000.obj
+    """
     if not os.path.exists(rigid_dir):
         print(f"Warning: {rigid_dir} not found")
         return
 
     pattern = os.path.join(rigid_dir, f"rigid_body_*_frame_{frame_str}.obj")
     mesh_files = sorted(glob.glob(pattern))
+    if not mesh_files:
+        print(f"Warning: no rigid meshes found: {pattern}")
+        return
 
     mat = bpy.data.materials.get(RB_MATERIAL_NAME)
 
@@ -36,7 +100,6 @@ def load_rigid_bodies(rigid_dir, frame_str):
         if hasattr(bpy.ops.wm, "obj_import"):
             bpy.ops.wm.obj_import(filepath=mesh_path, forward_axis="Y", up_axis="Z")
         else:
-            # Fallback for older Blender versions
             bpy.ops.import_scene.obj(filepath=mesh_path, axis_forward="Y", axis_up="Z")
 
         selected_objs = bpy.context.selected_objects
@@ -44,7 +107,6 @@ def load_rigid_bodies(rigid_dir, frame_str):
             print(f"Warning: No objects imported from {mesh_path}")
             continue
 
-        # If multiple objects are imported, join them or pick the first one
         bpy.context.view_layer.objects.active = selected_objs[0]
         if len(selected_objs) > 1:
             bpy.ops.object.join()
@@ -58,50 +120,36 @@ def load_rigid_bodies(rigid_dir, frame_str):
             else:
                 obj.data.materials.append(mat)
 
-        # Smooth shading
         for poly in obj.data.polygons:
             poly.use_smooth = True
 
 
-def load_mpm_mesh(obj_path):
-    """Imports OBJ mesh for MPM fluid."""
-    if not os.path.exists(obj_path):
-        print(f"Warning: {obj_path} not found")
+def load_mpm_particles(ply_path):
+    """Imports PLY and applies meshing."""
+    if not os.path.exists(ply_path):
         return
 
     bpy.ops.object.select_all(action="DESELECT")
 
-    # Use the new OBJ importer for Blender 4.0+
-    if hasattr(bpy.ops.wm, "obj_import"):
-        bpy.ops.wm.obj_import(filepath=obj_path, forward_axis="Y", up_axis="Z")
+    # Use the new PLY importer for Blender 4.0+
+    if hasattr(bpy.ops.wm, "ply_import"):
+        bpy.ops.wm.ply_import(filepath=ply_path)
     else:
         # Fallback for older Blender versions
-        bpy.ops.import_scene.obj(filepath=obj_path, axis_forward="Y", axis_up="Z")
+        bpy.ops.import_mesh.ply(filepath=ply_path)
 
-    selected_objs = bpy.context.selected_objects
-    if not selected_objs:
-        print(f"Warning: No objects imported from {obj_path}")
-        return
-
-    # If multiple objects are imported, join them or pick the first one
-    bpy.context.view_layer.objects.active = selected_objs[0]
-    if len(selected_objs) > 1:
-        bpy.ops.object.join()
-
-    obj = bpy.context.active_object
+    obj = bpy.context.selected_objects[0]
     obj.name = "MPM_Fluid"
 
-    # Apply Material
-    mat = bpy.data.materials.get(MPM_MATERIAL_NAME)
-    if mat:
-        if obj.data.materials:
-            obj.data.materials[0] = mat
-        else:
-            obj.data.materials.append(mat)
+    # Apply Meshing (Geometry Nodes)
+    setup_geometry_nodes(obj)
 
-    # Smooth shading
-    for poly in obj.data.polygons:
-        poly.use_smooth = True
+    # Add Laplacian Smooth Modifier (better for volume preservation)
+    smooth = obj.modifiers.new(name="Smooth", type="LAPLACIANSMOOTH")
+    smooth.lambda_factor = 0.5
+    smooth.iterations = 5
+    smooth.use_volume_preserve = True
+    smooth.use_normalized = True
 
 
 def cleanup_scene():
@@ -191,7 +239,7 @@ def setup_ground():
     plane.data.materials.append(mat)
 
 
-def render_frame(obj_file, rigid_dir, frame_str, output_file):
+def render_frame(ply_file: str, rigid_dir: str, frame_str: str, output_file: str):
     # 0. Load Assets File (Scene Setup)
     if os.path.exists(ASSETS_PATH):
         bpy.ops.wm.open_mainfile(filepath=ASSETS_PATH)
@@ -209,7 +257,7 @@ def render_frame(obj_file, rigid_dir, frame_str, output_file):
     load_rigid_bodies(rigid_dir, frame_str)
 
     # 2. Load MPM Fluid
-    load_mpm_mesh(obj_file)
+    load_mpm_particles(ply_file)
 
     # 3. Render
     bpy.context.scene.render.filepath = output_file
@@ -258,7 +306,7 @@ def render_frame(obj_file, rigid_dir, frame_str, output_file):
 
 
 if __name__ == "__main__":
-    # CLI Args: ... -- <obj_path> <rigid_dir> <frame_str> <output_png>
+    # CLI Args: ... -- <ply_path> <rigid_dir> <frame_str> <output_png>
     argv = sys.argv
     if "--" in argv:
         args = argv[argv.index("--") + 1 :]

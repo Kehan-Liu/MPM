@@ -10,26 +10,50 @@ import taichi as ti
 
 ti.init(arch=ti.gpu)
 
-scene = Scene(gravity=(0, 0, -9.81), n_grid=240)
+scene = Scene(gravity=(0, 0, -9.81), n_grid=64, dt=5e-5)
 
-bunny = MPMObject(
-    meshdir="meshes/bunny.obj",
-    position=(0.5, 0.5, 0.31),
-    num_particles=100000,
-    material=MPMMaterial(model=MPMModel.JELLY, E=1e5, nu=0.2, density=600, hardening=1.0),
+sand = MPMObject(
+    meshdir="Box",
+    position=(0.3, 0.5, 0.3),
+    scale=(1.0, 3.0, 1.5),
+    num_particles=2000000,
+    material=MPMMaterial(
+        model=MPMModel.SAND,
+        E=2e5,
+        nu=0.2,
+        density=1600,
+        friction_angle=35.0,
+    ),
 )
 
-Knife = RigidObject(
-    meshdir="meshes/quad-splitter.obj",
-    position=(0.5, 0.5, 0.15),
-    mass=10.0,
-    velocity=(0.0, 0.0, 0.0),
-    material=RigidMaterial(kh=10, friction=0.0, splitter=0.10),
-    is_dynamic=False,
+Ball1 = RigidObject(
+    meshdir="Ball",
+    position=(0.8, 0.5, 0.0451),
+    mass=1.0,
+    scale=(0.3, 0.3, 0.3),
+    material=RigidMaterial(kh=100, friction=0.5),
 )
 
-scene.add_mpm_object(bunny)
-scene.add_rigid_object(Knife)
+Ball2 = RigidObject(
+    meshdir="Ball",
+    position=(0.8, 0.5, 0.1352),
+    mass=1.0,
+    scale=(0.3, 0.3, 0.3),
+    material=RigidMaterial(kh=100, friction=0.5),
+)
+
+Ball3 = RigidObject(
+    meshdir="Ball",
+    position=(0.8, 0.5, 0.2253),
+    mass=1.0,
+    scale=(0.3, 0.3, 0.3),
+    material=RigidMaterial(kh=100, friction=0.5),
+)
+
+scene.add_mpm_object(sand)
+scene.add_rigid_object(Ball1)
+scene.add_rigid_object(Ball2)
+scene.add_rigid_object(Ball3)
 solver = MPMSolver(scene)
 
 colors = ti.Vector.field(3, dtype=ti.f32, shape=solver.n_particles[None])
@@ -53,7 +77,7 @@ window = ti.ui.Window("MPM", (1024, 1024), vsync=True)
 canvas = window.get_canvas()
 ui_scene = ti.ui.Scene()
 camera = ti.ui.Camera()
-camera.position(0.5, 2.0, 1.0)
+camera.position(0.5, 2.5, 0.8)
 camera.lookat(0.5, 0.5, 0.5)
 camera.up(0, 0, 1)
 
@@ -63,7 +87,7 @@ video_manager = ti.tools.VideoManager(
 
 current_time = 0.0
 for frame in range(300):
-    for _ in range(50):
+    for _ in range(100):
         solver.step(current_time)
         current_time += scene.dt
 
@@ -74,7 +98,6 @@ for frame in range(300):
 
     update_colors()
     ui_scene.particles(solver.p_x, radius=0.005, per_vertex_color=colors)
-
     for rb in solver.rigid.rigid_objects:
         rb.update_render_vertices()
         ui_scene.mesh(
@@ -84,10 +107,10 @@ for frame in range(300):
     canvas.scene(ui_scene)
     video_manager.write_frame(window.get_image_buffer_as_numpy())
     window.show()
-    os.makedirs("results/bunny_cut", exist_ok=True)
-    os.makedirs("results/bunny_cut/rigid", exist_ok=True)
-    os.makedirs("results/bunny_cut/particles", exist_ok=True)
-    solver.export(frame, "results/bunny_cut")
+    os.makedirs("results/sand_ballx3", exist_ok=True)
+    os.makedirs("results/sand_ballx3/rigid", exist_ok=True)
+    os.makedirs("results/sand_ballx3/particles", exist_ok=True)
+    solver.export(frame, "results/sand_ballx3")
     print(f"Frame {frame} / 300")
 
 video_manager.make_video(gif=True, mp4=True)

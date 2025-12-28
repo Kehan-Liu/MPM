@@ -10,26 +10,25 @@ import taichi as ti
 
 ti.init(arch=ti.gpu)
 
-scene = Scene(gravity=(0, 0, -9.81), n_grid=240)
+scene = Scene(gravity=(0, 0, -9.81), n_grid=64, dt=2e-5)
 
-bunny = MPMObject(
-    meshdir="meshes/bunny.obj",
-    position=(0.5, 0.5, 0.31),
-    num_particles=100000,
-    material=MPMMaterial(model=MPMModel.JELLY, E=1e5, nu=0.2, density=600, hardening=1.0),
+water = MPMObject(
+    meshdir="Box",
+    position=(0.5, 0.5, 0.7),
+    scale=(3.0, 3.0, 1.5),
+    num_particles=200000,
+    material=MPMMaterial(model=MPMModel.WATER, E=1e5, nu=0.49, density=1000),
 )
 
-Knife = RigidObject(
-    meshdir="meshes/quad-splitter.obj",
-    position=(0.5, 0.5, 0.15),
-    mass=10.0,
-    velocity=(0.0, 0.0, 0.0),
-    material=RigidMaterial(kh=10, friction=0.0, splitter=0.10),
-    is_dynamic=False,
+Ball = RigidObject(
+    meshdir="Ball",
+    position=(0.7, 0.5, 0.151),
+    mass=3.0,
+    material=RigidMaterial(kh=100, friction=0.5),
 )
 
-scene.add_mpm_object(bunny)
-scene.add_rigid_object(Knife)
+scene.add_mpm_object(water)
+scene.add_rigid_object(Ball)
 solver = MPMSolver(scene)
 
 colors = ti.Vector.field(3, dtype=ti.f32, shape=solver.n_particles[None])
@@ -53,7 +52,7 @@ window = ti.ui.Window("MPM", (1024, 1024), vsync=True)
 canvas = window.get_canvas()
 ui_scene = ti.ui.Scene()
 camera = ti.ui.Camera()
-camera.position(0.5, 2.0, 1.0)
+camera.position(0.5, 2.0, 0.5)
 camera.lookat(0.5, 0.5, 0.5)
 camera.up(0, 0, 1)
 
@@ -63,7 +62,7 @@ video_manager = ti.tools.VideoManager(
 
 current_time = 0.0
 for frame in range(300):
-    for _ in range(50):
+    for _ in range(250):
         solver.step(current_time)
         current_time += scene.dt
 
@@ -74,20 +73,15 @@ for frame in range(300):
 
     update_colors()
     ui_scene.particles(solver.p_x, radius=0.005, per_vertex_color=colors)
-
-    for rb in solver.rigid.rigid_objects:
-        rb.update_render_vertices()
-        ui_scene.mesh(
-            rb.render_vertices, indices=rb.render_indices, color=(0.6, 0.6, 0.6)
-        )
+    ui_scene.particles(solver.rigid.positions, radius=0.02, color=(1.0, 0.5, 0.5))
 
     canvas.scene(ui_scene)
     video_manager.write_frame(window.get_image_buffer_as_numpy())
     window.show()
-    os.makedirs("results/bunny_cut", exist_ok=True)
-    os.makedirs("results/bunny_cut/rigid", exist_ok=True)
-    os.makedirs("results/bunny_cut/particles", exist_ok=True)
-    solver.export(frame, "results/bunny_cut")
+    os.makedirs("results/water_ball", exist_ok=True)
+    os.makedirs("results/water_ball/rigid", exist_ok=True)
+    os.makedirs("results/water_ball/particles", exist_ok=True)
+    solver.export(frame, "results/water_ball")
     print(f"Frame {frame} / 300")
 
 video_manager.make_video(gif=True, mp4=True)

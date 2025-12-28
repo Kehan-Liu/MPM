@@ -13,6 +13,7 @@ import os
 CATEGORY_WATER = int(MPMModel.WATER.value)
 CATEGORY_JELLY = int(MPMModel.JELLY.value)
 CATEGORY_SNOW = int(MPMModel.SNOW.value)
+CATEGORY_SAND = int(MPMModel.SAND.value)
 
 
 @ti.data_oriented
@@ -50,6 +51,9 @@ class MPMSolver:
         self.material_lambda = ti.field(dtype=ti.f32, shape=self.num_mpm)
         self.material_hardening = ti.field(dtype=ti.f32, shape=self.num_mpm)
         self.material_type = ti.field(dtype=ti.i32, shape=self.num_mpm)
+        self.material_alpha = ti.field(
+            dtype=ti.f32, shape=self.num_mpm
+        )  # sand DP alpha
         self.object_p_vol = ti.field(dtype=ti.f32, shape=self.num_mpm)
 
         grid_shape = (self.n_grid,) * 3
@@ -98,6 +102,16 @@ class MPMSolver:
             self.material_hardening[i] = mat.hardening
             self.material_type[i] = int(mat.model.value)
 
+            phi_deg = float(getattr(mat, "friction_angle", 0.0))
+            phi = np.deg2rad(phi_deg)
+            sin_phi = np.sin(phi)
+            denom = 3.0 - sin_phi
+            if abs(denom) < 1e-8:
+                alpha = 0.0
+            else:
+                alpha = (np.sqrt(2.0 / 3.0) * 2.0 * sin_phi) / denom
+            self.material_alpha[i] = float(alpha)
+
     def init_mpm_particles(self):
         print("Initializing MPM particles...")
         all_p_x = []
@@ -125,63 +139,26 @@ class MPMSolver:
             # Apply translation
             mesh.apply_translation(obj.position)
 
-            # Stratified Sampling (Jittered Grid) - Approximates Poisson Disk
-            print(f"Sampling particles for object {i} using Stratified Sampling...")
+            samples = []
             bounds = mesh.bounds
 
-            # Calculate grid spacing to approximate target number of particles
-            # Volume = N * spacing^3  => spacing = (Volume / N)^(1/3)
-            # We use slightly smaller spacing to ensure we have enough candidates
-            spacing = (vol / obj.num_particles) ** (1.0 / 3.0) * 0.83
-
-            # Create grid points
-            x_range = np.arange(bounds[0][0], bounds[1][0] + spacing, spacing)
-            y_range = np.arange(bounds[0][1], bounds[1][1] + spacing, spacing)
-            z_range = np.arange(bounds[0][2], bounds[1][2] + spacing, spacing)
-
-            gx, gy, gz = np.meshgrid(x_range, y_range, z_range, indexing="ij")
-            grid_points = np.stack([gx.flatten(), gy.flatten(), gz.flatten()], axis=1)
-
-            # Add jitter (random offset within cell)
-            # Use 0.4 * spacing to keep particles separated by at least 0.2 * spacing
-            jitter = np.random.uniform(-0.3 * spacing, 0.3 * spacing, grid_points.shape)
-            candidate_points = grid_points + jitter
-
-            # Check containment in batches
-            print(f"Checking containment for {len(candidate_points)} candidates...")
-            samples = []
-            batch_size = 10000
-            for k in range(0, len(candidate_points), batch_size):
-                batch = candidate_points[k : k + batch_size]
-                inside = mesh.contains(batch)
-                samples.extend(batch[inside])
-                print(
-                    f"Processed batch {k // batch_size + 1}, total collected: {len(samples)}"
-                )
-
-            print(f"Collected {len(samples)} particles (target: {obj.num_particles})")
-
-            # Handle count mismatch
-            if len(samples) > obj.num_particles:
-                # Randomly select subset
-                indices = np.random.choice(
-                    len(samples), obj.num_particles, replace=False
-                )
-                samples = [samples[i] for i in indices]
-
-            # Fallback to random sampling if we don't have enough
             iter_count = 0
             while len(samples) < obj.num_particles and iter_count < 100:
-                needed = obj.num_particles - len(samples)
                 print(
-                    f"Need {needed} more particles, falling back to random sampling..."
+                    f"Sampling particles for object {i}, iteration {iter_count}, collected {len(samples)} particles"
                 )
-                batch_size = min(max(needed * 4, 1000), 10000)
+                needed = obj.num_particles - len(samples)
+                batch_size = min(max(needed * 2, 5000), 50000)
                 points = np.random.uniform(bounds[0], bounds[1], (batch_size, 3))
+                print("start checking containment")
                 inside = mesh.contains(points)
+                print("containment check done")
                 samples.extend(points[inside])
                 iter_count += 1
 
+            # Handle count mismatch
+            if len(samples) > obj.num_particles:
+                samples = samples[: obj.num_particles]
             while len(samples) < obj.num_particles:
                 if len(samples) > 0:
                     samples.append(samples[0])
@@ -317,7 +294,6 @@ class MPMSolver:
                             Q[row_id, 2] = gpos[1]
                             Q[row_id, 3] = gpos[2]
                             zeta[row_id, row_id] = weight
-                            Tpr += weight * d_signed
 
                     M = Q.transpose() @ zeta @ Q
                     M_inv = M.inverse()
@@ -346,9 +322,8 @@ class MPMSolver:
             mu = self.material_mu[op]
             lam = self.material_lambda[op]
             hardening = ti.exp(self.material_hardening[op] * (1.0 - self.p_Jp[p]))
-            if mat == CATEGORY_SNOW:
-                mu *= hardening
-                lam *= hardening
+            mu *= hardening
+            lam *= hardening
             if mat == CATEGORY_WATER:
                 mu = 0.0
 
@@ -358,23 +333,64 @@ class MPMSolver:
             U, sig, V = ti.svd(self.p_F[p])
             J = 1.0
             for d in ti.static(range(3)):
-                new_sig = sig[d, d]
-                if mat == CATEGORY_SNOW:
-                    new_sig = max(
-                        min(sig[d, d], 1 - 2.5e-2), 1 + 4.5e-3
-                    )  # Allow customization later !!
-                self.p_Jp[p] *= sig[d, d] / new_sig
-                sig[d, d] = new_sig
-                J *= new_sig
-            if mat == CATEGORY_WATER:
+                J *= sig[d, d]
+
+            if mat == CATEGORY_SNOW:
+                for d in ti.static(range(3)):
+                    new_sig = max(min(sig[d, d], 1 - 2.5e-2), 1 + 4.5e-3)
+                    self.p_Jp[p] *= sig[d, d] / new_sig
+                    sig[d, d] = new_sig
+                self.p_F[p] = U @ sig @ V.transpose()
+                J = sig[0, 0] * sig[1, 1] * sig[2, 2]
+            elif mat == CATEGORY_JELLY:
+                for d in ti.static(range(3)):
+                    new_sig = ti.min(1.1, ti.max(0.9, sig[d, d]))
+                    self.p_Jp[p] *= sig[d, d] / (new_sig + 1e-12)
+                    sig[d, d] = new_sig
+                self.p_F[p] = U @ sig @ V.transpose()
+                J = sig[0, 0] * sig[1, 1] * sig[2, 2]
+            elif mat == CATEGORY_SAND:
+                J_old = J
+                eps = ti.Vector(
+                    [
+                        ti.log(sig[0, 0]),
+                        ti.log(sig[1, 1]),
+                        ti.log(sig[2, 2]),
+                    ]
+                )
+                eps_mean = (eps[0] + eps[1] + eps[2]) / 3.0
+                eps_hat = eps - eps_mean
+                norm_eps_hat = eps_hat.norm() + 1e-12
+                alpha = self.material_alpha[op]
+                k = (3.0 * lam + 2.0 * mu) / (2.0 * mu + 1e-12) * alpha
+                f = norm_eps_hat + k * eps_mean
+                if f > 0:
+                    denom = 2.0 * mu + (3.0 * lam + 2.0 * mu) * alpha * alpha
+                    delta_gamma = f / (denom + 1e-12)
+                    eps = eps - delta_gamma * (
+                        eps_hat / norm_eps_hat + alpha * ti.Vector([1.0, 1.0, 1.0])
+                    )
+                    sig[0, 0] = ti.exp(eps[0])
+                    sig[1, 1] = ti.exp(eps[1])
+                    sig[2, 2] = ti.exp(eps[2])
+                    self.p_F[p] = U @ sig @ V.transpose()
+                    J_new = sig[0, 0] * sig[1, 1] * sig[2, 2]
+                    self.p_Jp[p] *= J_old / (J_new + 1e-12)
+                    J = J_new
+            elif mat == CATEGORY_WATER:
                 new_F = ti.Matrix.identity(ti.f32, 3)
                 new_F[0, 0] = J
                 self.p_F[p] = new_F
-            elif mat == CATEGORY_SNOW:
-                self.p_F[p] = U @ sig @ V.transpose()
-            stress = 2 * mu * (self.p_F[p] - U @ V.transpose()) @ self.p_F[
-                p
-            ].transpose() + ti.Matrix.identity(ti.f32, 3) * lam * J * (J - 1.0)
+
+            stress = ti.Matrix.zero(ti.f32, 3, 3)
+            if mat == CATEGORY_WATER:
+                pressure = lam * (J - 1.0) * J
+                pressure = ti.min(0.0, pressure)
+                stress = pressure * ti.Matrix.identity(ti.f32, 3)
+            else:
+                stress = 2 * mu * (self.p_F[p] - U @ V.transpose()) @ self.p_F[
+                    p
+                ].transpose() + ti.Matrix.identity(ti.f32, 3) * lam * J * (J - 1.0)
             stress *= -p_vol * 4 * self.inv_dx * self.inv_dx * self.dt
             affine = stress + p_mass * self.p_C[p]
 
@@ -404,11 +420,30 @@ class MPMSolver:
             if self.grid_m[I] > 0:
                 self.grid_v[I] = (1 / self.grid_m[I]) * self.grid_v[I]
                 # self.grid_v[I] += self.dt * self.gravity[None] # Gravity applied to particles
-                # Simple boundary condition !!
+                # Simple boundary condition | Add friction now
+                boundary_friction = 0.3
                 for d in ti.static(range(3)):
                     if I[d] < 3 and self.grid_v[I][d] < 0:
+                        v_n = self.grid_v[I][d]
+                        v_t = self.grid_v[I]
+                        v_t[d] = 0
+                        if v_t.norm() > 1e-10:
+                            self.grid_v[I] = v_t.normalized() * ti.max(
+                                0, v_t.norm() + v_n * boundary_friction
+                            )
+                        else:
+                            self.grid_v[I] = ti.Vector.zero(ti.f32, 3)
                         self.grid_v[I][d] = 0
                     if I[d] > self.n_grid - 3 and self.grid_v[I][d] > 0:
+                        v_n = self.grid_v[I][d]
+                        v_t = self.grid_v[I]
+                        v_t[d] = 0
+                        if v_t.norm() > 1e-10:
+                            self.grid_v[I] = v_t.normalized() * ti.max(
+                                0, v_t.norm() - v_n * boundary_friction
+                            )
+                        else:
+                            self.grid_v[I] = ti.Vector.zero(ti.f32, 3)
                         self.grid_v[I][d] = 0
 
     @ti.kernel
@@ -487,16 +522,30 @@ class MPMSolver:
 
     def export(self, frame, output_dir: str):
         self.rigid.export(frame, output_dir)
+        particle_path = os.path.join(output_dir, "particles")
         num_p = self.n_particles[None]
         pos_np = self.p_x.to_numpy()[:num_p]
+        vel_np = self.p_v.to_numpy()[:num_p]
 
-        vertex = np.array(
-            [(p[0], p[1], p[2]) for p in pos_np],
-            dtype=[("x", "f4"), ("y", "f4"), ("z", "f4")],
-        )
+        dtype_list = [
+            ("x", "f4"),
+            ("y", "f4"),
+            ("z", "f4"),
+            ("vx", "f4"),
+            ("vy", "f4"),
+            ("vz", "f4"),
+        ]
+        data = np.empty(num_p, dtype=dtype_list)
 
-        ply_el = PlyElement.describe(vertex, "vertex")
-        filename = os.path.join(output_dir, f"frame_{frame:04d}_mpm.ply")
+        data["x"] = pos_np[:, 0]
+        data["y"] = pos_np[:, 1]
+        data["z"] = pos_np[:, 2]
+        data["vx"] = vel_np[:, 0]
+        data["vy"] = vel_np[:, 1]
+        data["vz"] = vel_np[:, 2]
+
+        ply_el = PlyElement.describe(data, "vertex")
+        filename = os.path.join(particle_path, f"frame_{frame:04d}.ply")
         PlyData([ply_el], text=False).write(filename)
 
     def mpm_step(self):

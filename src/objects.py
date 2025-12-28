@@ -8,6 +8,7 @@ class MPMModel(Enum):
     WATER = 0
     JELLY = 1
     SNOW = 2
+    SAND = 3
 
 
 @dataclass
@@ -17,6 +18,7 @@ class MPMMaterial:
     E: float = 1e5
     nu: float = 0.2
     hardening: float = 0.0
+    friction_angle: float = 35.0
 
 
 @dataclass

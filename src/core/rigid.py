@@ -5,11 +5,11 @@ from typing import List, Tuple
 from src.core.rigid_body import RigidBody
 import json
 import os
-from tqdm import tqdm
 
 MAX_VERTICES = 100000
 MAX_FACES = 200000
 MAX_BP = 400000
+
 
 @ti.kernel
 def rigid_rigid_penalty(
@@ -127,6 +127,7 @@ def mesh_box_penalty(
                 F = f_n * best_n + f_t
                 rb.apply_impulse_at_point(F * dt, cp)
 
+
 @ti.kernel
 def mesh_plane_penalty(
     rb: ti.template(),
@@ -174,6 +175,7 @@ def mesh_plane_penalty(
                         f_t = f_visc
                 F = f_n * n + f_t
                 rb.apply_impulse_at_point(F * dt, cp)
+
 
 @ti.data_oriented
 class Rigid:
@@ -239,8 +241,6 @@ class Rigid:
             self.rigid_objects.append(RigidBody(obj))
             self.rotation_matrices[i] = self.rigid_objects[i].rotation_matrix[None]
 
-        self.export_meshes()
-
     def load_mesh_data(self):
         vertex_count = 0
         face_count = 0
@@ -251,7 +251,7 @@ class Rigid:
             mesh = obj.mesh
 
             # Compute CoM and Inertia manually (Shell)
-            verts = mesh.vertices - obj.mass_center_offset[None].to_numpy()
+            verts = mesh.vertices
             faces = mesh.faces
 
             n_verts = len(verts)
@@ -290,19 +290,14 @@ class Rigid:
                             bp_count += 1
                         y_length += self.dx
                     x_length += self.dx
-                # use tqdm to show progress of boundary particle generation
-                if 'bp_tqdm' not in globals():
-                    try:
-                        globals()['bp_tqdm'] = tqdm(desc="Boundary particles", unit="bp", leave=True)
-                    except Exception:
-                        globals()['bp_tqdm'] = None
-                if globals().get('bp_tqdm') is not None:
-                    globals()['bp_tqdm'].update(1)
 
             vertex_count += n_verts
             face_count += n_faces
 
         self.n_boundary_particles[None] = bp_count
+        print(
+            f"Loaded {vertex_count} vertices, {face_count} faces, {bp_count} boundary particles"
+        )
 
     @ti.func
     def get_bp_position(self, p):
@@ -343,31 +338,53 @@ class Rigid:
 
     def resolve_collisions(self):
         # Pairwise rigid-rigid collision
-        stiffness = self.stiffness 
+        stiffness = self.stiffness
         damping = self.damping
         margin = self.margin
-        
+
         for i in range(self.n_rigid):
             for j in range(i + 1, self.n_rigid):
                 A = self.rigid_objects[i]
                 B = self.rigid_objects[j]
                 # If both are Balls, prefer analytic detection + impulse, log collision
-                is_ball_i = isinstance(self.rigid_conf[i].meshdir, str) and self.rigid_conf[i].meshdir.lower() == "ball"
-                is_ball_j = isinstance(self.rigid_conf[j].meshdir, str) and self.rigid_conf[j].meshdir.lower() == "ball"
+                is_ball_i = (
+                    isinstance(self.rigid_conf[i].meshdir, str)
+                    and self.rigid_conf[i].meshdir.lower() == "ball"
+                )
+                is_ball_j = (
+                    isinstance(self.rigid_conf[j].meshdir, str)
+                    and self.rigid_conf[j].meshdir.lower() == "ball"
+                )
                 if is_ball_i and is_ball_j:
                     pi = A.position[None].to_numpy()
                     pj = B.position[None].to_numpy()
                     # estimate radius from centered mesh verts
                     try:
-                        ri = float(np.max(np.linalg.norm(A.mesh.vertices - A.mass_center_offset[None].to_numpy(), axis=1)))
-                        rj = float(np.max(np.linalg.norm(B.mesh.vertices - B.mass_center_offset[None].to_numpy(), axis=1)))
+                        ri = float(
+                            np.max(
+                                np.linalg.norm(
+                                    A.mesh.vertices
+                                    - A.mass_center_offset[None].to_numpy(),
+                                    axis=1,
+                                )
+                            )
+                        )
+                        rj = float(
+                            np.max(
+                                np.linalg.norm(
+                                    B.mesh.vertices
+                                    - B.mass_center_offset[None].to_numpy(),
+                                    axis=1,
+                                )
+                            )
+                        )
                     except Exception:
                         ri, rj = 0.1, 0.1
                     dist = float(np.linalg.norm(pi - pj))
                     collided = dist <= (ri + rj)
                     # print(f"[debug] Ball pair ({i},{j}) collided={collided} dist={dist:.4f} thr={(ri+rj):.4f}")
                     if collided:
-                        n = (pi - pj)
+                        n = pi - pj
                         n_norm = float(np.linalg.norm(n))
                         if n_norm > 1e-8:
                             n = n / n_norm
@@ -379,13 +396,25 @@ class Rigid:
                                 try:
                                     mA = float(A.mass[None])
                                 except Exception:
-                                    mA = float(A.mass) if not hasattr(A.mass, '__getitem__') else float(A.mass[None])
+                                    mA = (
+                                        float(A.mass)
+                                        if not hasattr(A.mass, "__getitem__")
+                                        else float(A.mass[None])
+                                    )
                                 try:
                                     mB = float(B.mass[None])
                                 except Exception:
-                                    mB = float(B.mass) if not hasattr(B.mass, '__getitem__') else float(B.mass[None])
-                                e_pair = float(max(self.restitution[i], self.restitution[j])) if hasattr(self, 'restitution') else 0.0
-                                J = -(1.0 + e_pair) * vn / (1.0/mA + 1.0/mB)
+                                    mB = (
+                                        float(B.mass)
+                                        if not hasattr(B.mass, "__getitem__")
+                                        else float(B.mass[None])
+                                    )
+                                e_pair = (
+                                    float(max(self.restitution[i], self.restitution[j]))
+                                    if hasattr(self, "restitution")
+                                    else 0.0
+                                )
+                                J = -(1.0 + e_pair) * vn / (1.0 / mA + 1.0 / mB)
                                 vA_new = vA + (J * n) / mA
                                 vB_new = vB - (J * n) / mB
                                 A.velocity[None] = vA_new.astype(np.float32)
@@ -418,8 +447,12 @@ class Rigid:
         for i in range(self.n_rigid):
             mesh_box_penalty(
                 self.rigid_objects[i],
-                0.0, 0.0, 0.0,
-                1.0, 1.0, 1.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+                1.0,
+                1.0,
                 stiffness,
                 damping,
                 margin,
@@ -448,21 +481,6 @@ class Rigid:
             self.angular_impulses[i] = ti.Vector([0.0, 0.0, 0.0])
 
     def export(self, frame, output_dir: str):
-        frame_data = []
+        rigid_path = os.path.join(output_dir, "rigid")
         for i, obj in enumerate(self.rigid_objects):
-            rb_data = {
-                "id": i,
-                "pos": obj.position[None].to_list(),
-                "rot": obj.orientation[None].to_list(),
-            }
-            frame_data.append(rb_data)
-
-        filename = os.path.join(output_dir, f"frame_{frame:04d}_rigid.json")
-        with open(filename, "w") as f:
-            json.dump(frame_data, f, indent=4)
-
-    def export_meshes(self):
-        os.makedirs("rigid_meshes", exist_ok=True)
-        for i, obj in enumerate(self.rigid_objects):
-            filepath = os.path.join("rigid_meshes", f"rigid_{i}.obj")
-            obj.export_centered_mesh(filepath)
+            obj.export(frame, rigid_path, rb_id=i)

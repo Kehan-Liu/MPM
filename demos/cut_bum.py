@@ -10,25 +10,30 @@ import taichi as ti
 
 ti.init(arch=ti.gpu)
 
-scene = Scene(gravity=(0, 0, -9.81), n_grid=64)
+scene = Scene(gravity=(0, 0, -9.81), n_grid=240)
 
-water = MPMObject(
+bum = MPMObject(
     meshdir="Box",
-    position=(0.5, 0.5, 0.3),
-    scale=(3.0, 3.0, 1.5),
-    num_particles=200000,
-    material=MPMMaterial(model=MPMModel.WATER, E=1e5, nu=0.2, density=1000),
+    position=(0.65, 0.5, 0.076),
+    scale=(2.0, 0.5, 0.5),
+    num_particles=60000,
+    material=MPMMaterial(model=MPMModel.SNOW, E=1e4, nu=0.0, density=300, hardening=2.0),
 )
 
-Cube = RigidObject(
-    meshdir="Box",
-    position=(0.5, 0.5, 0.8),
-    mass=5.0,
-    material=RigidMaterial(kh=5000, friction=0.5, splitter=0.1),
+Knife = RigidObject(
+    meshdir="meshes/Knife.obj",
+    position=(0.5, 0.5, 0.15),
+    mass=10.0,
+    velocity=(0.0, 0.0, 0.0),
+    material=RigidMaterial(kh=10, friction=0.0),
+    scripted_trajectory=controller,
 )
 
-scene.add_mpm_object(water)
-scene.add_rigid_object(Cube)
+def controller(t: float):
+
+
+scene.add_mpm_object(bum)
+scene.add_rigid_object(Knife)
 solver = MPMSolver(scene)
 
 colors = ti.Vector.field(3, dtype=ti.f32, shape=solver.n_particles[None])
@@ -52,7 +57,7 @@ window = ti.ui.Window("MPM", (1024, 1024), vsync=True)
 canvas = window.get_canvas()
 ui_scene = ti.ui.Scene()
 camera = ti.ui.Camera()
-camera.position(0.5, 2.0, 0.5)
+camera.position(3.0, 3.0, 1.5)
 camera.lookat(0.5, 0.5, 0.5)
 camera.up(0, 0, 1)
 
@@ -73,12 +78,20 @@ for frame in range(300):
 
     update_colors()
     ui_scene.particles(solver.p_x, radius=0.005, per_vertex_color=colors)
-    ui_scene.particles(solver.rigid.positions, radius=0.02, color=(1.0, 0.5, 0.5))
+
+    for rb in solver.rigid.rigid_objects:
+        rb.update_render_vertices()
+        ui_scene.mesh(
+            rb.render_vertices, indices=rb.render_indices, color=(0.6, 0.6, 0.6)
+        )
 
     canvas.scene(ui_scene)
     video_manager.write_frame(window.get_image_buffer_as_numpy())
     window.show()
-    solver.export(frame, "results/water_cube")
+    os.makedirs("results/bunny_cut", exist_ok=True)
+    os.makedirs("results/bunny_cut/rigid", exist_ok=True)
+    os.makedirs("results/bunny_cut/particles", exist_ok=True)
+    solver.export(frame, "results/bunny_cut")
     print(f"Frame {frame} / 300")
 
 video_manager.make_video(gif=True, mp4=True)

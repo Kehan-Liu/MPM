@@ -1,3 +1,15 @@
+## 12.28
+By LKH
+
+- Add 2D realtime demo
+- Improve rendering, allow multiple pipelines
+- Add demos, `cut_bum` unfinished
+
+TODO:
+- Finish cut_bum
+- Run all demos and make videos
+- Improve water simulation (small time step and larger E will help)
+
 ## 12.5
 By LHZ
 
