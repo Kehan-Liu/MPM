@@ -17,6 +17,7 @@ class MPMMaterial:
     density: float = 1000.0
     E: float = 1e5
     nu: float = 0.2
+    viscosity: float = 0.0
     hardening: float = 0.0
     friction_angle: float = 35.0
 

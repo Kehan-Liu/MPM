@@ -49,6 +49,7 @@ class MPMSolver:
         self.material_density = ti.field(dtype=ti.f32, shape=self.num_mpm)
         self.material_mu = ti.field(dtype=ti.f32, shape=self.num_mpm)
         self.material_lambda = ti.field(dtype=ti.f32, shape=self.num_mpm)
+        self.material_viscosity = ti.field(dtype=ti.f32, shape=self.num_mpm)
         self.material_hardening = ti.field(dtype=ti.f32, shape=self.num_mpm)
         self.material_type = ti.field(dtype=ti.i32, shape=self.num_mpm)
         self.material_alpha = ti.field(
@@ -90,6 +91,9 @@ class MPMSolver:
         self.init_mpm_materials()
         self.init_mpm_particles()
 
+        # Helpful hint: with higher resolution, stable/consistent dt often must shrink.
+        self._print_dt_recommendation()
+
     def init_mpm_materials(self):
         print("Initializing MPM materials...")
         for i, obj in enumerate(self.mpm_objects):
@@ -99,6 +103,7 @@ class MPMSolver:
             nu = mat.nu
             self.material_mu[i] = E / (2 * (1 + nu))
             self.material_lambda[i] = E * nu / ((1 + nu) * (1 - 2 * nu))
+            self.material_viscosity[i] = float(getattr(mat, "viscosity", 0.0))
             self.material_hardening[i] = mat.hardening
             self.material_type[i] = int(mat.model.value)
 
@@ -111,6 +116,35 @@ class MPMSolver:
             else:
                 alpha = (np.sqrt(2.0 / 3.0) * 2.0 * sin_phi) / denom
             self.material_alpha[i] = float(alpha)
+
+    def _print_dt_recommendation(self, cfl: float = 0.4):
+        """Print a rough CFL dt recommendation based on elastic wave speed.
+
+        This is not a guarantee (contacts/collisions can require smaller dt),
+        but it helps explain resolution-dependent instability/energy.
+        """
+
+        dx = self.dx
+        c_max = 0.0
+        for i, obj in enumerate(self.mpm_objects):
+            mat = obj.material
+            rho = float(getattr(mat, "density", 1000.0))
+            E = float(getattr(mat, "E", 1e5))
+            nu = float(getattr(mat, "nu", 0.2))
+            # Lame parameters (same formulas used in Taichi fields)
+            mu = E / (2 * (1 + nu))
+            lam = E * nu / ((1 + nu) * (1 - 2 * nu + 1e-12))
+            # Longitudinal wave speed for isotropic linear elastic material.
+            # For water in this code (mu=0), this reduces to sqrt(lam/rho) scale.
+            c = float(np.sqrt(max(lam + 2.0 * mu, 0.0) / max(rho, 1e-12)))
+            c_max = max(c_max, c)
+
+        if c_max <= 0:
+            return
+        dt_rec = cfl * dx / c_max
+        print(
+            f"[MPM] dt={self.dt:.3e}, dx={dx:.3e}. Rough CFL dt≈{dt_rec:.3e} (CFL={cfl}, c_max≈{c_max:.3e})."
+        )
 
     def init_mpm_particles(self):
         print("Initializing MPM particles...")
@@ -263,9 +297,7 @@ class MPMSolver:
                 Tpr = 0.0
 
                 # Moving Least Squares
-                zeta = ti.Matrix.identity(ti.f32, 27)
-                d_grid = ti.Vector.zero(ti.f32, 27)
-                Q = ti.Matrix.zero(ti.f32, 27, 4)
+                # Optimized to avoid large matrix construction (27x27) which slows down compilation
 
                 for offset in ti.static(ti.grouped(ti.ndrange(3, 3, 3))):
                     gi = base + offset
@@ -279,6 +311,9 @@ class MPMSolver:
                     if self.p_T[p][r] == 0:
                         self.p_T[p][r] = 1 if Tpr > 0 else -1
 
+                    M = ti.Matrix.zero(ti.f32, 4, 4)
+                    rhs = ti.Vector.zero(ti.f32, 4)
+
                     for offset in ti.static(ti.grouped(ti.ndrange(3, 3, 3))):
                         gi = base + offset
                         if self.is_valid(gi):
@@ -286,18 +321,14 @@ class MPMSolver:
                             d_signed = (
                                 self.grid_T[gi][r] * self.grid_d[gi][r] * self.p_T[p][r]
                             )
-                            row_id = offset[0] * 9 + offset[1] * 3 + offset[2]
                             gpos = (offset.cast(float) - fx) * self.dx
-                            d_grid[row_id] = d_signed
-                            Q[row_id, 0] = 1.0
-                            Q[row_id, 1] = gpos[0]
-                            Q[row_id, 2] = gpos[1]
-                            Q[row_id, 3] = gpos[2]
-                            zeta[row_id, row_id] = weight
 
-                    M = Q.transpose() @ zeta @ Q
+                            q = ti.Vector([1.0, gpos[0], gpos[1], gpos[2]])
+                            M += weight * q.outer_product(q)
+                            rhs += weight * d_signed * q
+
                     M_inv = M.inverse()
-                    beta = M_inv @ Q.transpose() @ zeta @ d_grid
+                    beta = M_inv @ rhs
                     self.p_d[p][r] = beta[0]
                     self.p_n[p, r] = ti.Vector([beta[1], beta[2], beta[3]]).normalized()
                 else:
@@ -391,6 +422,12 @@ class MPMSolver:
                 stress = 2 * mu * (self.p_F[p] - U @ V.transpose()) @ self.p_F[
                     p
                 ].transpose() + ti.Matrix.identity(ti.f32, 3) * lam * J * (J - 1.0)
+
+            eta = self.material_viscosity[op]
+            if eta > 0:
+                D = 0.5 * (self.p_C[p] + self.p_C[p].transpose())
+                stress += 2.0 * eta * D
+
             stress *= -p_vol * 4 * self.inv_dx * self.inv_dx * self.dt
             affine = stress + p_mass * self.p_C[p]
 
