@@ -1,4 +1,9 @@
 ## 12.30
+By LHZ
+
+- Use boundary particles to handle rigid body collisions
+
+## 12.30
 By LKH
 
 - Change to weak compressible stresss model for water

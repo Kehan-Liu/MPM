@@ -5,7 +5,7 @@ import os
 
 def reconstruct_mesh(ply_path, output_obj_path):
     """
-    Reconstructs mesh from PLY particles using pysplashsurf.
+    Reconstructs mesh from PLY particles using splashsurf.
     """
     if not os.path.exists(ply_path):
         print(f"Error: Input file {ply_path} does not exist.")
@@ -21,7 +21,7 @@ def reconstruct_mesh(ply_path, output_obj_path):
     # -t=0.6 (density threshold)
 
     cmd = [
-        "pysplashsurf",
+        "splashsurf",
         "reconstruct",
         ply_path,
         "-r=0.02",

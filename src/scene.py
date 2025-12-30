@@ -10,6 +10,9 @@ class Scene:
     gravity: Tuple[float, float, float] = (0.0, -9.81, 0.0)
     n_grid: int = 128
     dt: float = 1e-4
+    penalty_parameter: float = 1
+    clamp_factor: float = 20.0
+    
 
     def add_rigid_object(self, rigid_object: RigidObject):
         self.rigid_objects.append(rigid_object)
