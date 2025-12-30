@@ -19,7 +19,8 @@ class MPMMaterial:
     nu: float = 0.2
     viscosity: float = 0.0
     hardening: float = 0.0
-    friction_angle: float = 35.0
+    stiffness: float = 200.0
+    power: float = 7.0
 
 
 @dataclass

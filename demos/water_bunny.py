@@ -10,21 +10,23 @@ import taichi as ti
 
 ti.init(arch=ti.gpu)
 
-scene = Scene(gravity=(0, 0, -9.81), n_grid=64, dt=2e-5)
+scene = Scene(gravity=(0, 0, -9.81), n_grid=128, dt=2e-5)
 
 water = MPMObject(
     meshdir="Box",
-    position=(0.5, 0.5, 0.7),
-    scale=(3.0, 3.0, 1.5),
+    position=(0.3, 0.5, 0.6),
+    scale=(1.5, 3.0, 2.0),
     num_particles=200000,
-    material=MPMMaterial(model=MPMModel.WATER, E=1e5, nu=0.49, density=1000),
+    material=MPMMaterial(
+        model=MPMModel.WATER, density=1000, viscosity=0.5, stiffness=200, power=7.0
+    ),
 )
 
 Ball = RigidObject(
-    meshdir="Ball",
-    position=(0.7, 0.5, 0.151),
+    meshdir="meshes/bunny.obj",
+    position=(0.7, 0.5, 0.15),
     mass=3.0,
-    material=RigidMaterial(kh=100, friction=0.5),
+    material=RigidMaterial(kh=10, friction=0),
 )
 
 scene.add_mpm_object(water)
@@ -52,7 +54,7 @@ window = ti.ui.Window("MPM", (1024, 1024), vsync=True)
 canvas = window.get_canvas()
 ui_scene = ti.ui.Scene()
 camera = ti.ui.Camera()
-camera.position(0.5, 2.0, 0.5)
+camera.position(3.0, 3.0, 1.5)
 camera.lookat(0.5, 0.5, 0.5)
 camera.up(0, 0, 1)
 
@@ -73,7 +75,11 @@ for frame in range(300):
 
     update_colors()
     ui_scene.particles(solver.p_x, radius=0.005, per_vertex_color=colors)
-    ui_scene.particles(solver.rigid.positions, radius=0.02, color=(1.0, 0.5, 0.5))
+    for rb in solver.rigid.rigid_objects:
+        rb.update_render_vertices()
+        ui_scene.mesh(
+            rb.render_vertices, indices=rb.render_indices, color=(0.6, 0.6, 0.6)
+        )
 
     canvas.scene(ui_scene)
     video_manager.write_frame(window.get_image_buffer_as_numpy())

@@ -38,7 +38,7 @@ class MPMSolver:
         self.p_x = ti.Vector.field(3, dtype=ti.f32, shape=num_particles)
         self.p_v = ti.Vector.field(3, dtype=ti.f32, shape=num_particles)
         self.p_F = ti.Matrix.field(3, 3, dtype=ti.f32, shape=num_particles)
-        self.p_Jp = ti.field(dtype=ti.f32, shape=num_particles)
+        self.p_Jp = ti.field(dtype=ti.f32, shape=num_particles) # plastic deformation
         self.p_C = ti.Matrix.field(3, 3, dtype=ti.f32, shape=num_particles)
         self.p_material = ti.field(dtype=ti.i32, shape=num_particles)
         self.n_particles = ti.field(dtype=ti.i32, shape=())
@@ -51,10 +51,9 @@ class MPMSolver:
         self.material_lambda = ti.field(dtype=ti.f32, shape=self.num_mpm)
         self.material_viscosity = ti.field(dtype=ti.f32, shape=self.num_mpm)
         self.material_hardening = ti.field(dtype=ti.f32, shape=self.num_mpm)
+        self.material_stiffness = ti.field(dtype=ti.f32, shape=self.num_mpm)
+        self.material_power = ti.field(dtype=ti.f32, shape=self.num_mpm)
         self.material_type = ti.field(dtype=ti.i32, shape=self.num_mpm)
-        self.material_alpha = ti.field(
-            dtype=ti.f32, shape=self.num_mpm
-        )  # sand DP alpha
         self.object_p_vol = ti.field(dtype=ti.f32, shape=self.num_mpm)
 
         grid_shape = (self.n_grid,) * 3
@@ -106,16 +105,8 @@ class MPMSolver:
             self.material_viscosity[i] = float(getattr(mat, "viscosity", 0.0))
             self.material_hardening[i] = mat.hardening
             self.material_type[i] = int(mat.model.value)
-
-            phi_deg = float(getattr(mat, "friction_angle", 0.0))
-            phi = np.deg2rad(phi_deg)
-            sin_phi = np.sin(phi)
-            denom = 3.0 - sin_phi
-            if abs(denom) < 1e-8:
-                alpha = 0.0
-            else:
-                alpha = (np.sqrt(2.0 / 3.0) * 2.0 * sin_phi) / denom
-            self.material_alpha[i] = float(alpha)
+            self.material_stiffness[i] = mat.stiffness
+            self.material_power[i] = mat.power
 
     def _print_dt_recommendation(self, cfl: float = 0.4):
         """Print a rough CFL dt recommendation based on elastic wave speed.
@@ -129,14 +120,20 @@ class MPMSolver:
         for i, obj in enumerate(self.mpm_objects):
             mat = obj.material
             rho = float(getattr(mat, "density", 1000.0))
-            E = float(getattr(mat, "E", 1e5))
-            nu = float(getattr(mat, "nu", 0.2))
-            # Lame parameters (same formulas used in Taichi fields)
-            mu = E / (2 * (1 + nu))
-            lam = E * nu / ((1 + nu) * (1 - 2 * nu + 1e-12))
-            # Longitudinal wave speed for isotropic linear elastic material.
-            # For water in this code (mu=0), this reduces to sqrt(lam/rho) scale.
-            c = float(np.sqrt(max(lam + 2.0 * mu, 0.0) / max(rho, 1e-12)))
+            if mat.model == MPMModel.WATER:
+                # Weakly-compressible EOS: p = k * ((rho/rho0)^gamma - 1)
+                # dp/drho|rho0 = k * gamma / rho0  =>  c = sqrt(k*gamma/rho0)
+                k = float(getattr(mat, "stiffness", 200.0))
+                gamma = float(getattr(mat, "power", 7))
+                c = float(np.sqrt(max(k * gamma, 0.0) / max(rho, 1e-12)))
+            else:
+                E = float(getattr(mat, "E", 1e5))
+                nu = float(getattr(mat, "nu", 0.2))
+                # Lame parameters (same formulas used in Taichi fields)
+                mu = E / (2 * (1 + nu))
+                lam = E * nu / ((1 + nu) * (1 - 2 * nu + 1e-12))
+                # Longitudinal wave speed for isotropic linear elastic material.
+                c = float(np.sqrt(max(lam + 2.0 * mu, 0.0) / max(rho, 1e-12)))
             c_max = max(c_max, c)
 
         if c_max <= 0:
@@ -340,7 +337,7 @@ class MPMSolver:
         self.grid_v.fill(0)
         self.grid_m.fill(0)
 
-        # P2G
+        # P2G_1, distribute mass and velocity
         for p in range(self.n_particles[None]):
             self.p_v[p] += self.dt * self.gravity[None]  # Apply gravity to particle
             base = (self.p_x[p] * self.inv_dx - 0.5).cast(int)
@@ -349,87 +346,7 @@ class MPMSolver:
             op = self.p_material[p]  # object index
             p_vol = self.object_p_vol[op]
             p_mass = self.material_density[op] * p_vol
-            mat = self.material_type[op]
-            mu = self.material_mu[op]
-            lam = self.material_lambda[op]
-            hardening = ti.exp(self.material_hardening[op] * (1.0 - self.p_Jp[p]))
-            mu *= hardening
-            lam *= hardening
-            if mat == CATEGORY_WATER:
-                mu = 0.0
-
-            self.p_F[p] = (
-                ti.Matrix.identity(ti.f32, 3) + self.dt * self.p_C[p]
-            ) @ self.p_F[p]
-            U, sig, V = ti.svd(self.p_F[p])
-            J = 1.0
-            for d in ti.static(range(3)):
-                J *= sig[d, d]
-
-            if mat == CATEGORY_SNOW:
-                for d in ti.static(range(3)):
-                    new_sig = max(min(sig[d, d], 1 - 2.5e-2), 1 + 4.5e-3)
-                    self.p_Jp[p] *= sig[d, d] / new_sig
-                    sig[d, d] = new_sig
-                self.p_F[p] = U @ sig @ V.transpose()
-                J = sig[0, 0] * sig[1, 1] * sig[2, 2]
-            elif mat == CATEGORY_JELLY:
-                for d in ti.static(range(3)):
-                    new_sig = ti.min(1.1, ti.max(0.9, sig[d, d]))
-                    self.p_Jp[p] *= sig[d, d] / (new_sig + 1e-12)
-                    sig[d, d] = new_sig
-                self.p_F[p] = U @ sig @ V.transpose()
-                J = sig[0, 0] * sig[1, 1] * sig[2, 2]
-            elif mat == CATEGORY_SAND:
-                J_old = J
-                eps = ti.Vector(
-                    [
-                        ti.log(sig[0, 0]),
-                        ti.log(sig[1, 1]),
-                        ti.log(sig[2, 2]),
-                    ]
-                )
-                eps_mean = (eps[0] + eps[1] + eps[2]) / 3.0
-                eps_hat = eps - eps_mean
-                norm_eps_hat = eps_hat.norm() + 1e-12
-                alpha = self.material_alpha[op]
-                k = (3.0 * lam + 2.0 * mu) / (2.0 * mu + 1e-12) * alpha
-                f = norm_eps_hat + k * eps_mean
-                if f > 0:
-                    denom = 2.0 * mu + (3.0 * lam + 2.0 * mu) * alpha * alpha
-                    delta_gamma = f / (denom + 1e-12)
-                    eps = eps - delta_gamma * (
-                        eps_hat / norm_eps_hat + alpha * ti.Vector([1.0, 1.0, 1.0])
-                    )
-                    sig[0, 0] = ti.exp(eps[0])
-                    sig[1, 1] = ti.exp(eps[1])
-                    sig[2, 2] = ti.exp(eps[2])
-                    self.p_F[p] = U @ sig @ V.transpose()
-                    J_new = sig[0, 0] * sig[1, 1] * sig[2, 2]
-                    self.p_Jp[p] *= J_old / (J_new + 1e-12)
-                    J = J_new
-            elif mat == CATEGORY_WATER:
-                new_F = ti.Matrix.identity(ti.f32, 3)
-                new_F[0, 0] = J
-                self.p_F[p] = new_F
-
-            stress = ti.Matrix.zero(ti.f32, 3, 3)
-            if mat == CATEGORY_WATER:
-                pressure = lam * (J - 1.0) * J
-                pressure = ti.min(0.0, pressure)
-                stress = pressure * ti.Matrix.identity(ti.f32, 3)
-            else:
-                stress = 2 * mu * (self.p_F[p] - U @ V.transpose()) @ self.p_F[
-                    p
-                ].transpose() + ti.Matrix.identity(ti.f32, 3) * lam * J * (J - 1.0)
-
-            eta = self.material_viscosity[op]
-            if eta > 0:
-                D = 0.5 * (self.p_C[p] + self.p_C[p].transpose())
-                stress += 2.0 * eta * D
-
-            stress *= -p_vol * 4 * self.inv_dx * self.inv_dx * self.dt
-            affine = stress + p_mass * self.p_C[p]
+            p_C = self.p_C[p]
 
             for offset in ti.static(ti.grouped(ti.ndrange(3, 3, 3))):
                 gi = base + offset
@@ -446,9 +363,105 @@ class MPMSolver:
                         dpos = (offset.cast(float) - fx) * self.dx
                         weight = w[offset[0]][0] * w[offset[1]][1] * w[offset[2]][2]
                         self.grid_v[gi] += weight * (
-                            p_mass * self.p_v[p] + affine @ dpos
+                            p_mass * (self.p_v[p] + p_C @ dpos)
                         )
                         self.grid_m[gi] += weight * p_mass
+
+        # P2G_2, strain-stess
+        for p in range(self.n_particles[None]):
+            base = (self.p_x[p] * self.inv_dx - 0.5).cast(int)
+            fx = self.p_x[p] * self.inv_dx - base.cast(float)
+            w = [0.5 * (1.5 - fx) ** 2, 0.75 - (fx - 1.0) ** 2, 0.5 * (fx - 0.5) ** 2]
+            op = self.p_material[p]  # object index
+            p_vol = self.object_p_vol[op]
+            p_mass = self.material_density[op] * p_vol
+            mat = self.material_type[op]
+            self.p_F[p] = (
+                ti.Matrix.identity(ti.f32, 3) + self.dt * self.p_C[p]
+            ) @ self.p_F[p]
+            U, sig, V = ti.svd(self.p_F[p])
+            J = 1.0
+            for d in ti.static(range(3)):
+                J *= sig[d, d]
+            
+            stress = ti.Matrix.zero(ti.f32, 3, 3)
+            if mat == CATEGORY_WATER:
+                stiffness = self.material_stiffness[op]
+                power = self.material_power[op]
+                eta = self.material_viscosity[op]
+
+                # Clamp J to prevent numerical instability with J^(-power)
+                J_clamped = ti.max(0.05, ti.min(J, 20.0))
+                new_F = ti.Matrix.identity(ti.f32, 3)
+                new_F[0, 0] = J_clamped
+                self.p_F[p] = new_F
+
+                volume = p_vol * J_clamped
+                # Tait-Murnaghan EOS: p = k * (J^(-gamma) - 1)
+                # Clamp negative pressure (tension) relative to stiffness
+                pressure = ti.max(
+                    -stiffness * 0.5,
+                    stiffness * (ti.pow(J_clamped, -power) - 1.0),
+                )
+
+                stress = -pressure * ti.Matrix.identity(ti.f32, 3)
+                # Newtonian viscosity: sigma_visc = 2 * eta * D, D = sym(grad v)
+                D = self.p_C[p] + self.p_C[p].transpose()
+                stress += eta * D
+                div_v = self.p_C[p].trace()
+                if div_v < 0:
+                    bulk_visc = 0.1 * stiffness * self.dx
+                    stress += bulk_visc * div_v * ti.Matrix.identity(ti.f32, 3)
+                stress *= -volume * 4.0 * self.dt * self.inv_dx * self.inv_dx
+
+            else:
+                mu = self.material_mu[op]
+                lam = self.material_lambda[op]
+                hardening = ti.exp(self.material_hardening[op] * (1.0 - self.p_Jp[p]))
+                mu *= hardening
+                lam *= hardening
+                if mat == CATEGORY_SAND:
+                    mu = 50.0
+
+                if mat == CATEGORY_SNOW:
+                    for d in ti.static(range(3)):
+                        new_sig = max(min(sig[d, d], 1 - 2.5e-2), 1 + 4.5e-3)
+                        self.p_Jp[p] *= sig[d, d] / new_sig
+                        sig[d, d] = new_sig
+                    self.p_F[p] = U @ sig @ V.transpose()
+                    J = sig[0, 0] * sig[1, 1] * sig[2, 2]
+                elif mat == CATEGORY_SAND:
+                    new_F = ti.Matrix.identity(ti.f32, 3)
+                    new_F[0, 0] = J
+                    self.p_F[p] = new_F
+                    self.p_Jp[p] = J
+
+                stress = 2 * mu * (self.p_F[p] - U @ V.transpose()) @ self.p_F[
+                    p
+                ].transpose() + ti.Matrix.identity(ti.f32, 3) * lam * J * (J - 1.0)
+
+                eta = self.material_viscosity[op]
+                if eta > 0:
+                    D = self.p_C[p] + self.p_C[p].transpose()
+                    stress += eta * D
+
+                stress *= -p_vol * 4 * self.inv_dx * self.inv_dx * self.dt
+
+            for offset in ti.static(ti.grouped(ti.ndrange(3, 3, 3))):
+                gi = base + offset
+                if self.is_valid(gi):
+                    flag = 1
+                    # check compatibility
+                    for k in ti.static(range(self.rigid.n_rigid)):
+                        if (
+                            self.p_T[p][k] != self.grid_T[gi][k]
+                            and self.p_A[p][k] * self.grid_A[gi][k] != 0
+                        ):
+                            flag = 0
+                    if flag == 1:
+                        dpos = (offset.cast(float) - fx) * self.dx
+                        weight = w[offset[0]][0] * w[offset[1]][1] * w[offset[2]][2]
+                        self.grid_v[gi] += weight * stress @ dpos
 
     @ti.kernel
     def update_grid(self):

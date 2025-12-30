@@ -1,3 +1,13 @@
+## 12.30
+By LKH
+
+- Change to weak compressible stresss model for water
+- Fix bunny mesh bug
+
+TODO:
+- Why pysplashsurf doesn't work
+- Run demos
+
 ## 12.28
 By LKH
 
