@@ -250,16 +250,21 @@ class RigidBody:
     def apply_impulse_at_point(
         self, impulse: ti.types.vector(3, ti.f32), point: ti.types.vector(3, ti.f32)
     ):
-        self.impulse[None] += impulse
-        self.angular_impulse[None] += ti.math.cross(
-            point - self.position[None], impulse
-        )
+        # Use atomic adds to avoid race conditions when multiple contact samples
+        # accumulate impulses concurrently from parallel kernels.
+        for k in ti.static(range(3)):
+            ti.atomic_add(self.impulse[None][k], impulse[k])
+        torque = ti.math.cross(point - self.position[None], impulse)
+        for k in ti.static(range(3)):
+            ti.atomic_add(self.angular_impulse[None][k], torque[k])
 
     @ti.func
     def signed_distance(self, p):
         min_abs = 1e30
         best_phi = 0.0
         best_n = ti.Vector([0.0, 1.0, 0.0])
+        best_cp = ti.Vector([0.0, 0.0, 0.0])
+        best_f = -1
         center = self.position[None]
         for f in range(self.faces.shape[0]):
             idx = self.faces[f]
@@ -267,18 +272,36 @@ class RigidBody:
             b = center + self.rotation_matrix[None] @ self.vertices[idx[1]]
             c = center + self.rotation_matrix[None] @ self.vertices[idx[2]]
             cp = closest_point_on_triangle(p, a, b, c)
-            n = tri_normal(a, b, c)
-            phi = (p - cp).dot(n)
-            # flip to make n point outward from rb
-            # if (center - cp).dot(n) > 0:
-            #     phi = -phi
-            #     n = -n
+            # Use actual distance from p to closest point as magnitude,
+            # and choose normal from surface toward exterior.
+            dir_vec = p - cp
+            dist = dir_vec.norm()
+            phi = ti.cast(0.0, ti.f32)
+            n = ti.Vector([0.0, 0.0, 0.0])
+            if dist > 1e-8:
+                dir_n = dir_vec / dist
+                # if dir points toward center, p is inside -> negative phi
+                if (center - cp).dot(dir_vec) > 0:
+                    phi = -dist
+                    n = -dir_n
+                else:
+                    phi = dist
+                    n = dir_n
+            else:
+                # p is effectively on the surface; fall back to triangle normal
+                n = tri_normal(a, b, c)
+                # determine sign by checking if n points outward relative to center
+                if (center - cp).dot(n) > 0:
+                    n = -n
+                phi = (p - cp).dot(n)
             ap = ti.abs(phi)
             if ap < min_abs:
                 min_abs = ap
                 best_phi = phi
                 best_n = n
-        return best_phi, best_n
+                best_cp = cp
+                best_f = f
+        return best_phi, best_n, best_cp, best_f
 
     @ti.func
     def get_velocity_at_point(
@@ -411,6 +434,28 @@ class RigidBody:
         )
         self.update_render_vertices()
         vertices_np = self.render_vertices.to_numpy()
-        faces_np = self.render_indices.to_numpy().reshape(-1, 3)
+        # Prefer authoritative face indices from the original per-body mesh stored
+        # in `self.mesh`. Fall back to Taichi fields if necessary.
+        try:
+            faces_np = np.array(self.mesh.faces, dtype=np.int32)
+        except Exception:
+            faces_np = self.faces.to_numpy()
+
+        # Validate face indices to avoid trimesh IndexError; emit diagnostics if invalid.
+        if faces_np.size == 0:
+            print(f"Warning: rigid {rb_id} has no faces to export (frame {frame}). Skipping.")
+            return
+
+        max_idx = int(np.max(faces_np))
+        n_verts = int(vertices_np.shape[0])
+        if max_idx >= n_verts:
+            print(
+                f"Export skipped for rigid {rb_id} frame {frame}: max face index {max_idx} >= vertex count {n_verts}."
+            )
+            # Provide sample diagnostics
+            print(f"Vertex count: {n_verts}, faces shape: {faces_np.shape}")
+            print(f"Faces sample: {faces_np.flatten()[:12]}")
+            return
+
         mesh = trimesh.Trimesh(vertices=vertices_np, faces=faces_np)
         mesh.export(filename)

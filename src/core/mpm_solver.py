@@ -28,7 +28,7 @@ class MPMSolver:
         self.gravity = ti.Vector.field(3, dtype=ti.f32, shape=())
         self.gravity[None] = ti.Vector(scene.gravity)
 
-        self.rigid = Rigid(scene.rigid_objects, self.dx, self.dt, scene.gravity)
+        self.rigid = Rigid(scene.rigid_objects, self.dx, self.dt, scene.gravity, penalty_parameter=scene.penalty_parameter, clamp_factor=scene.clamp_factor)
 
         # self.cloth = Cloth(scene.cloth_objects, self.dx, self.dt)
 

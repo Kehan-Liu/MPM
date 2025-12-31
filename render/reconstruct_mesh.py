@@ -11,7 +11,7 @@ from plyfile import PlyData, PlyElement
 
 def reconstruct_mesh(ply_path, output_obj_path):
     """
-    Reconstructs mesh from PLY particles using pysplashsurf.
+    Reconstructs mesh from PLY particles using splashsurf.
     """
     if not os.path.exists(ply_path):
         print(f"Error: Input file {ply_path} does not exist.")
@@ -26,15 +26,10 @@ def reconstruct_mesh(ply_path, output_obj_path):
     # -c=0.2 (cube radius / voxel size)
     # -t=0.6 (density threshold)
 
-    # Prefer the console entrypoint if available; otherwise fall back to
-    # `python -m pysplashsurf` which is more robust across environments.
-    exe = shutil.which("pysplashsurf")
-    if exe is None:
-        cmd = [sys.executable, "-m", "pysplashsurf", "reconstruct", ply_path]
-    else:
-        cmd = [exe, "reconstruct", ply_path]
-
-    cmd += [
+    cmd = [
+        "splashsurf",
+        "reconstruct",
+        ply_path,
         "-r=0.02",
         "-l=2.0",
         "-c=0.2",
