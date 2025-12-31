@@ -10,7 +10,7 @@ import taichi as ti
 
 ti.init(arch=ti.gpu)
 
-scene = Scene(gravity=(0, 0, -9.81), n_grid=64, dt=5e-5)
+scene = Scene(gravity=(0, 0, -9.81), n_grid=240, dt=5e-5)
 
 sand = MPMObject(
     meshdir="Box",
@@ -21,7 +21,7 @@ sand = MPMObject(
         model=MPMModel.SAND,
         E=2e5,
         nu=0.2,
-        density=1600,
+        density=800,
         friction_angle=35.0,
     ),
 )

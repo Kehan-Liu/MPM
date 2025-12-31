@@ -1,35 +1,20 @@
-# MPM / Simulation & Rendering Sandbox
+# Fluid, Deformable Body and Rigid Body Simulator
 
 
 ## Environment Setup
-`requirements.txt` 包含：`taichi`, `numpy`, `trimesh`, 以及可选的渲染/分析库。安装：
+Please run the following command to create a virtual environment and install the required packages:
 ```powershell
+conda create -n mpm python=3.10
+conda activate mpm
 pip install -r requirements.txt
 ```
+For windows users, you may need to replace `blender` in `render_frame.py` with the full path to your blender executable, e.g., `C:\Program Files\Blender Foundation\Blender 3.5\blender.exe`.
 
 ## Getting Started
 Inside `demos/` folder, you can find several demo scripts showcasing different features of the simulator. You can run them directly after setting up the environment, or create your own demo. For example:
 ```powershell
 python .\demos\test_bunny.py
 ```
-
-<!-- ## 渲染(Render)
-Ensure your blender path is at (if not, replace it with correct path)
-```
-C:\\Program Files\\Blender Foundation\\Blender 5.0\\blender.exe
-```
-use the following command to render the simulation output of previous tests:
-```powershell
- & "C:\Program Files\Blender Foundation\Blender 5.0\blender.exe" -b -P render/blender_render.py -- --pose_dir f:\ACG\MPM\results\test_bunny --import_meshes f:\ACG\MPM\rigid_meshes --output f:\ACG\MPM\results\render_ti_frames --engine CYCLES --use_gpu --gpu_type OPTIX --fps 60 --resolution 1280x720 --ground --body_colors "0:0.2,0.6,0.9;1:0.9,0.4,0.2"
-```
-Parameters explanation:
-- `--mesh_sequence` : 读取的刚体模拟输出目录
-- `--output` : 输出渲染图片的目录
-- `--fps` : 帧率
-- `--resolution` : 分辨率
-- `--use_gpu`, `--gpu_only` : 使用GPU渲染
-- `--ground` : 添加地面阴影
-- `--body_colors` : 给不同刚体上色 -->
 
 ## Rendering Simulation Output
 You can change the background HDRI image by replacing the file at `assets\background.exr` and add material textures in `assets\assets.blend` with blender. Specify the settings in the `render/render_frame.py` script, then run the following command to render simulation outputs:
@@ -38,7 +23,12 @@ python render/render_demo.py demo_name --start start_frame --end end_frame
 ```
 You can find the result in `render_output/demo_name/`.
 
-## PNG to MP4
+We also provide two other rendering scripts for specific use cases:
+- `render/render_demo_blender.py`: Render with blender, less costly but noisy reconstruction.
+- `render/render_granular_demo.py`: Render granular materials.
+
+## Try the Realtime Interaction Demo
+You can run the realtime interaction demo with the following command:
 ```powershell
-python .\render\frames_to_mp4.py --input results\render_ti_frames --out results\ti_demo.mp4 --fps 60
+python .\demos\realtime_demo.py
 ```

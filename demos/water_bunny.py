@@ -18,7 +18,7 @@ water = MPMObject(
     scale=(1.5, 3.0, 2.0),
     num_particles=200000,
     material=MPMMaterial(
-        model=MPMModel.WATER, density=1000, viscosity=0.5, stiffness=200, power=7.0
+        model=MPMModel.WATER, density=1000, viscosity=2.0, stiffness=200, power=7.0
     ),
 )
 

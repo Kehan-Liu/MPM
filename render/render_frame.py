@@ -7,7 +7,7 @@ import mathutils
 
 # --- Configuration ---
 ASSETS_PATH = "assets.blend"  # Path to your pre-made file
-MPM_MATERIAL_NAME = "Water"  # Must match a material name in assets.blend
+MPM_MATERIAL_NAME = "QieGao"  # Must match a material name in assets.blend
 RB_MATERIAL_NAME = "RigidMat"  # Must match a material name in assets.blend
 
 # Scene Settings

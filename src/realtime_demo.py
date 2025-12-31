@@ -311,5 +311,5 @@ while not gui.get_event(ti.GUI.ESCAPE, ti.GUI.EXIT):
     ke_np = knife_end.to_numpy()
     gui.line(ks_np, ke_np, radius=2, color=0xFF0000)
 
-    gui.text("Control: Mouse to move, A/D to rotate", pos=(0.05, 0.95), color=0x000000)
+    gui.text("Control: Mouse to move, Q/E to rotate", pos=(0.05, 0.95), color=0x000000)
     gui.show()

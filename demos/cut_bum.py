@@ -10,27 +10,59 @@ import taichi as ti
 
 ti.init(arch=ti.gpu)
 
-scene = Scene(gravity=(0, 0, -9.81), n_grid=240)
+dt = 5e-5
+substeps = 100
+
+scene = Scene(gravity=(0, 0, -9.81), n_grid=240, dt=dt)
 
 bum = MPMObject(
     meshdir="Box",
-    position=(0.65, 0.5, 0.076),
-    scale=(2.0, 0.5, 0.5),
-    num_particles=60000,
-    material=MPMMaterial(model=MPMModel.SNOW, E=1e4, nu=0.0, density=300, hardening=2.0),
-)
-
-Knife = RigidObject(
-    meshdir="meshes/Knife.obj",
-    position=(0.5, 0.5, 0.15),
-    mass=10.0,
-    velocity=(0.0, 0.0, 0.0),
-    material=RigidMaterial(kh=10, friction=0.0),
-    scripted_trajectory=controller,
+    position=(0.65, 0.5, 0.151),
+    scale=(2.0, 1.0, 1.0),
+    num_particles=4000000,
+    material=MPMMaterial(model=MPMModel.JELLY, E=5e4, nu=0.2, density=600),
 )
 
 def controller(t: float):
+    move_down_time = 30 * substeps
+    move_forward = 10 * substeps
+    move_backward = 30 * substeps
+    move_up_time = 30 * substeps
+    interval = 0.15
+    forward = 0.1
+    step = int(t / dt + 0.5)
+    base_x = 0.5 + float(step // (100 * substeps)) * interval
+    step = step % (100 * substeps)
+    z_high = 0.5
+    z_low = 0.151
+    y = 0.5
+    x = base_x
+    orientation = (1.0, 0.0, 0.0, 0.0)
+    if step < move_down_time:
+        z = z_high - (z_high - z_low) * (step / move_down_time)
+    elif step < move_down_time + move_forward:
+        z = z_low
+        x = base_x - forward * ((step - move_down_time) / move_forward)
+    elif step < move_down_time + move_forward + move_up_time:
+        z = z_low + (z_high - z_low) * (
+            (step - move_down_time - move_forward) / move_up_time
+        )
+        x = base_x - forward
+    else:
+        z = z_high
+        x = base_x - forward + (forward + interval) * (
+            (step - move_down_time - move_forward - move_up_time) / move_backward
+        )
+    return (x, y, z), orientation
 
+Knife = RigidObject(
+    meshdir="meshes/knife.obj",
+    position=(0.5, 0.5, 0.3),
+    mass=10.0,
+    velocity=(0.0, 0.0, 0.0),
+    material=RigidMaterial(kh=300, friction=0.0, splitter=1e-2),
+    scripted_trajectory=controller,
+)
 
 scene.add_mpm_object(bum)
 scene.add_rigid_object(Knife)
@@ -57,7 +89,7 @@ window = ti.ui.Window("MPM", (1024, 1024), vsync=True)
 canvas = window.get_canvas()
 ui_scene = ti.ui.Scene()
 camera = ti.ui.Camera()
-camera.position(3.0, 3.0, 1.5)
+camera.position(-2.0, -2.0, 1.5)
 camera.lookat(0.5, 0.5, 0.5)
 camera.up(0, 0, 1)
 
@@ -67,7 +99,7 @@ video_manager = ti.tools.VideoManager(
 
 current_time = 0.0
 for frame in range(300):
-    for _ in range(50):
+    for _ in range(substeps):
         solver.step(current_time)
         current_time += scene.dt
 
@@ -88,10 +120,10 @@ for frame in range(300):
     canvas.scene(ui_scene)
     video_manager.write_frame(window.get_image_buffer_as_numpy())
     window.show()
-    os.makedirs("results/bunny_cut", exist_ok=True)
-    os.makedirs("results/bunny_cut/rigid", exist_ok=True)
-    os.makedirs("results/bunny_cut/particles", exist_ok=True)
-    solver.export(frame, "results/bunny_cut")
+    os.makedirs("results/cut_bum", exist_ok=True)
+    os.makedirs("results/cut_bum/rigid", exist_ok=True)
+    os.makedirs("results/cut_bum/particles", exist_ok=True)
+    solver.export(frame, "results/cut_bum")
     print(f"Frame {frame} / 300")
 
 video_manager.make_video(gif=True, mp4=True)

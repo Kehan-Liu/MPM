@@ -6,16 +6,16 @@ import mathutils
 
 # --- Configuration ---
 ASSETS_PATH = os.path.join("assets", "assets.blend")  # Path to your pre-made file
-MPM_MATERIAL_NAME = "Water"  # Must match a material name in assets.blend
+MPM_MATERIAL_NAME = "QieGao"  # Must match a material name in assets.blend
 RB_MATERIAL_NAME = "RigidMat"  # Must match a material name in assets.blend
 
 # Meshing Settings
 PARTICLE_RADIUS = 0.02
-VOXEL_SIZE = 1.0 / 64
-THRESHOLD = 0.6
+VOXEL_SIZE = 0.1
+THRESHOLD = 2.0
 
 # Scene Settings
-CAMERA_POS = (3.0, 3.0, 1.5)
+CAMERA_POS = (-2.0, -2.0, 1.5)
 CAMERA_LOOKAT = (0.5, 0.5, 0.5)
 LIGHT_POS = (5.0, 5.0, 10.0)
 LIGHT_ENERGY = 5.0
@@ -147,7 +147,7 @@ def load_mpm_particles(ply_path):
     # Add Laplacian Smooth Modifier (better for volume preservation)
     smooth = obj.modifiers.new(name="Smooth", type="LAPLACIANSMOOTH")
     smooth.lambda_factor = 0.5
-    smooth.iterations = 5
+    smooth.iterations = 0
     smooth.use_volume_preserve = True
     smooth.use_normalized = True
 

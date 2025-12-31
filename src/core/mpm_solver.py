@@ -38,7 +38,7 @@ class MPMSolver:
         self.p_x = ti.Vector.field(3, dtype=ti.f32, shape=num_particles)
         self.p_v = ti.Vector.field(3, dtype=ti.f32, shape=num_particles)
         self.p_F = ti.Matrix.field(3, 3, dtype=ti.f32, shape=num_particles)
-        self.p_Jp = ti.field(dtype=ti.f32, shape=num_particles) # plastic deformation
+        self.p_Jp = ti.field(dtype=ti.f32, shape=num_particles)  # plastic deformation
         self.p_C = ti.Matrix.field(3, 3, dtype=ti.f32, shape=num_particles)
         self.p_material = ti.field(dtype=ti.i32, shape=num_particles)
         self.n_particles = ti.field(dtype=ti.i32, shape=())
@@ -246,7 +246,9 @@ class MPMSolver:
             d00 = v0v1.dot(v0v1)
             d01 = v0v1.dot(v0v2)
             d11 = v0v2.dot(v0v2)
+            # Guard against degenerate/near-degenerate triangles.
             denom = d00 * d11 - d01 * d01
+            denom = ti.select(ti.abs(denom) < 1e-12, 1e-12, denom)
             face_normal = self.rigid.face_normals[f_id]  # normalized
             base = (bp_pos * self.inv_dx - 0.5).cast(int)
             for offset in ti.static(ti.grouped(ti.ndrange(3, 3, 3))):
@@ -324,10 +326,16 @@ class MPMSolver:
                             M += weight * q.outer_product(q)
                             rhs += weight * d_signed * q
 
+                    # Regularize MLS matrix to avoid singular inverse near contact boundaries.
+                    for k in ti.static(range(4)):
+                        M[k, k] += 1e-8
+
                     M_inv = M.inverse()
                     beta = M_inv @ rhs
                     self.p_d[p][r] = beta[0]
-                    self.p_n[p, r] = ti.Vector([beta[1], beta[2], beta[3]]).normalized()
+                    n_raw = ti.Vector([beta[1], beta[2], beta[3]])
+                    # Avoid NaNs when n_raw is (near) zero.
+                    self.p_n[p, r] = n_raw / ti.max(n_raw.norm(), 1e-12)
                 else:
                     self.p_T[p][r] = 0
 
@@ -383,7 +391,7 @@ class MPMSolver:
             J = 1.0
             for d in ti.static(range(3)):
                 J *= sig[d, d]
-            
+
             stress = ti.Matrix.zero(ti.f32, 3, 3)
             if mat == CATEGORY_WATER:
                 stiffness = self.material_stiffness[op]
@@ -425,7 +433,7 @@ class MPMSolver:
 
                 if mat == CATEGORY_SNOW:
                     for d in ti.static(range(3)):
-                        new_sig = max(min(sig[d, d], 1 - 2.5e-2), 1 + 4.5e-3)
+                        new_sig = min(max(sig[d, d], 1 - 2.5e-2), 1 + 4.5e-3)
                         self.p_Jp[p] *= sig[d, d] / new_sig
                         sig[d, d] = new_sig
                     self.p_F[p] = U @ sig @ V.transpose()
@@ -526,9 +534,11 @@ class MPMSolver:
                         gr = self.grid_r[gi]
                         g_rigid_vel = self.rigid.get_rigid_velocity(gr, gpos)
                         delta_v = self.p_v[p] - g_rigid_vel
-                        dv_dot_n = delta_v.dot(self.p_n[p, gr])
+                        n = self.p_n[p, gr]
+                        n = n / ti.max(n.norm(), 1e-12)
+                        dv_dot_n = delta_v.dot(n)
                         if dv_dot_n < 0:
-                            delta_vt = delta_v - dv_dot_n * self.p_n[p, gr]
+                            delta_vt = delta_v - dv_dot_n * n
                             vt_norm = delta_vt.norm()
                             new_g_vt = self.p_v[p]
                             if vt_norm > 1e-10:
@@ -536,11 +546,7 @@ class MPMSolver:
                                     0.0,
                                     vt_norm + self.rigid.friction[gr] * dv_dot_n,
                                 ) * (delta_vt / vt_norm)
-                            new_g_vn = (
-                                self.rigid.restitution[gr]
-                                * (-dv_dot_n)
-                                * self.p_n[p, gr]
-                            )
+                            new_g_vn = self.rigid.restitution[gr] * (-dv_dot_n) * n
                             g_v = new_g_vt + new_g_vn + g_rigid_vel
                             self.rigid.apply_impulse(
                                 gr,
@@ -549,9 +555,7 @@ class MPMSolver:
                             )
                         else:
                             g_v = self.p_v[p]
-                        g_v += (
-                            self.p_n[p, gr] * self.rigid.splitter[gr]
-                        )  # splitting them apart
+                        g_v += n * self.rigid.splitter[gr]  # splitting them apart
                     new_v += weight * g_v
                     dpos = offset.cast(float) - fx
                     new_C += 4 * weight * g_v.outer_product(dpos) * self.inv_dx
@@ -563,10 +567,7 @@ class MPMSolver:
             # penalty force
             for r in ti.static(range(self.rigid.n_rigid)):
                 if self.p_d[p][r] < 0:
-                    # Velocity-based penalty (Problem 1 fix)
-                    delta_v_penalty = (
-                        self.rigid.kh[r] * (-self.p_d[p][r]) * self.p_n[p, r]
-                    )
+                    delta_v_penalty = self.rigid.kh[r] * (-self.p_d[p][r]) * self.p_n[p, r]
                     self.p_v[p] += delta_v_penalty
                     self.rigid.apply_impulse(r, self.p_x[p], -delta_v_penalty * p_mass)
 
