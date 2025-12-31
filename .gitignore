@@ -9,3 +9,4 @@ taichi_mpm/
 results/
 rigid_meshes/
 render_output/
+.vscode/
