@@ -1,0 +1,11 @@
+outputs/
+*.pyc
+*__pycache__/
+*.jpg
+*.png
+demo/
+taichi_mpm/
+*.log
+results/
+rigid_meshes/
+render_output/
