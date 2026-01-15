@@ -617,12 +617,12 @@ class Rigid:
                         contactA = impA - extA - g_impA
                         contactB = impB - extB - g_impB
 
-                        print(
-                            f"collision detected between rigid {i} and {j} at time {time};"
-                            f" totalA={impA}, extA={extA}, gravityA={g_impA}, contactA={contactA};"
-                            f" totalB={impB}, extB={extB}, gravityB={g_impB}, contactB={contactB};"
-                            f" angA={angA}, angB={angB}"
-                        )
+                        # print(
+                        #     f"collision detected between rigid {i} and {j} at time {time};"
+                        #     f" totalA={impA}, extA={extA}, gravityA={g_impA}, contactA={contactA};"
+                        #     f" totalB={impB}, extB={extB}, gravityB={g_impB}, contactB={contactB};"
+                        #     f" angA={angA}, angB={angB}"
+                        # )
                         # print diagnostic summary per body
                         try:
                             dc_i = int(self.diag_contact_counts[i])
@@ -678,15 +678,15 @@ class Rigid:
                     g_vec = np.array([float(self.gravity[0]), float(self.gravity[1]), float(self.gravity[2])], dtype=np.float32)
                     g_imp = (g_vec * m * float(self.dt)).astype(np.float32)
                     contact = imp - ext - g_imp
-                    print(
-                        f"collision detected between rigid {i} and box at time {time};"
-                        f" total={imp}, ext={ext}, gravity={g_imp}, contact={contact}; ang={ang}"
-                    )
+                    # print(
+                    #     f"collision detected between rigid {i} and box at time {time};"
+                    #     f" total={imp}, ext={ext}, gravity={g_imp}, contact={contact}; ang={ang}"
+                    # )
                     try:
                         dc = int(self.diag_contact_counts[i])
                         mx = float(self.diag_max_fn[i])
                         sm = self.diag_sum_imp[i].to_numpy()
-                        print(f"diag (count,max_fn,sum_imp) = ({dc},{mx},{sm})")
+                        # print(f"diag (count,max_fn,sum_imp) = ({dc},{mx},{sm})")
                     except Exception:
                         pass
             except Exception:

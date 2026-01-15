@@ -12,6 +12,7 @@ class Scene:
     dt: float = 1e-4
     penalty_parameter: float = 1
     clamp_factor: float = 20.0
+    use_pressure_projection: bool = False
     
 
     def add_rigid_object(self, rigid_object: RigidObject):

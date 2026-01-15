@@ -1,6 +1,7 @@
 import taichi as ti
 from src.core.rigid import Rigid
 from src.core.utils import *
+from src.core.mgpcg_solver import MGPCGSolver
 
 # from src.core.cloth import Cloth
 from src.objects import RigidObject, MPMObject, ClothObject, MPMModel
@@ -9,6 +10,7 @@ from typing import List
 import numpy as np
 from plyfile import PlyData, PlyElement
 import os
+import time
 
 CATEGORY_WATER = int(MPMModel.WATER.value)
 CATEGORY_JELLY = int(MPMModel.JELLY.value)
@@ -24,11 +26,19 @@ class MPMSolver:
         self.n_grid = scene.n_grid
         self.dx = 1.0 / self.n_grid  # grid spacing
         self.inv_dx = float(self.n_grid)
+        self.use_pressure_projection = scene.use_pressure_projection
 
         self.gravity = ti.Vector.field(3, dtype=ti.f32, shape=())
         self.gravity[None] = ti.Vector(scene.gravity)
 
-        self.rigid = Rigid(scene.rigid_objects, self.dx, self.dt, scene.gravity, penalty_parameter=scene.penalty_parameter, clamp_factor=scene.clamp_factor)
+        self.rigid = Rigid(
+            scene.rigid_objects,
+            self.dx,
+            self.dt,
+            scene.gravity,
+            penalty_parameter=scene.penalty_parameter,
+            clamp_factor=scene.clamp_factor,
+        )
 
         # self.cloth = Cloth(scene.cloth_objects, self.dx, self.dt)
 
@@ -89,6 +99,24 @@ class MPMSolver:
 
         self.init_mpm_materials()
         self.init_mpm_particles()
+
+        # Initialize MGPCG pressure projection solver if enabled
+        if self.use_pressure_projection:
+            print("Initializing MGPCG pressure projection solver...")
+            self.pressure_solver = MGPCGSolver(
+                n_grid=self.n_grid,
+                dx=self.dx,
+                dt=self.dt,
+                n_mg_levels=min(4, int(np.log2(self.n_grid)) - 2),
+                pre_smoothing_iters=2,
+                post_smoothing_iters=2,
+                bottom_smoothing_iters=50,
+                cg_max_iters=500,
+                cg_tolerance=1e-6,
+                omega=0.67,
+            )
+        else:
+            self.pressure_solver = None
 
         # Helpful hint: with higher resolution, stable/consistent dt often must shrink.
         self._print_dt_recommendation()
@@ -546,7 +574,7 @@ class MPMSolver:
                                     0.0,
                                     vt_norm + self.rigid.friction[gr] * dv_dot_n,
                                 ) * (delta_vt / vt_norm)
-                            new_g_vn = self.rigid.restitution[gr] * (-dv_dot_n) * n
+                            new_g_vn = 0
                             g_v = new_g_vt + new_g_vn + g_rigid_vel
                             self.rigid.apply_impulse(
                                 gr,
@@ -567,7 +595,9 @@ class MPMSolver:
             # penalty force
             for r in ti.static(range(self.rigid.n_rigid)):
                 if self.p_d[p][r] < 0:
-                    delta_v_penalty = self.rigid.kh[r] * (-self.p_d[p][r]) * self.p_n[p, r]
+                    delta_v_penalty = (
+                        self.rigid.kh[r] * (-self.p_d[p][r]) * self.p_n[p, r]
+                    )
                     self.p_v[p] += delta_v_penalty
                     self.rigid.apply_impulse(r, self.p_x[p], -delta_v_penalty * p_mass)
 
@@ -606,9 +636,32 @@ class MPMSolver:
         self.update_particle_rigid_properties()
         self.p2g()
         self.update_grid()
+
+        # Apply pressure projection for incompressible fluids if enabled
+        if self.use_pressure_projection and self.pressure_solver is not None:
+            self.apply_pressure_projection()
+
         self.g2p()
 
-    def step(self, time):
+    def apply_pressure_projection(self):
+        mass_threshold = 1e-6
+
+        if self.rigid.n_rigid > 0:
+            n_iters = self.pressure_solver.project(
+                grid_v=self.grid_v,
+                grid_m=self.grid_m,
+                mass_threshold=mass_threshold,
+                grid_A=self.grid_A,
+                n_rigid=self.rigid.n_rigid,
+            )
+        else:
+            n_iters = self.pressure_solver.project(
+                grid_v=self.grid_v,
+                grid_m=self.grid_m,
+                mass_threshold=mass_threshold,
+            )
+
+    def step(self, t):
         self.mpm_step()
-        self.rigid.step(time)
+        self.rigid.step(t)
         # self.cloth.step()

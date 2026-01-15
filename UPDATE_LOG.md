@@ -1,3 +1,8 @@
+## 1.14
+by LKH
+
+- clean repo, add MGPCG solver
+
 ## 12.30
 By LHZ
 
